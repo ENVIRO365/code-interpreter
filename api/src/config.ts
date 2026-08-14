@@ -71,6 +71,26 @@ export const config = {
    * session mode. An enabled runner additionally binds each request to a
    * workspace through the authenticated X-Runtime-Session-Id header. */
   session_workspace_enabled: (process.env.SANDBOX_SESSION_WORKSPACE_ENABLED ?? 'false') === 'true',
+  /* Browser control. Paths are baked by the lambda-microvm-runner image; the
+   * enable flag deliberately is not, so the browse route stays 404 until an
+   * operator opts in through the MicroVM image environment. Browse additionally
+   * requires session_workspace_enabled — a browser without a persistent
+   * workspace has nowhere to leave downloads for a later execute to read. */
+  browser_enabled: (process.env.SANDBOX_BROWSER_ENABLED ?? 'false') === 'true',
+  browser_binary: process.env.SANDBOX_BROWSER_BINARY ?? '',
+  browser_library_path: process.env.SANDBOX_BROWSER_LIBRARY_PATH ?? '',
+  browser_fontconfig_path: process.env.SANDBOX_BROWSER_FONTCONFIG_PATH ?? '',
+  browser_cdp_port: safeInt(process.env.SANDBOX_BROWSER_CDP_PORT, 9222),
+  /* Deliberately outside the session workspace: session-checkpoint.ts tars the
+   * whole workspace, and a Chromium profile is hundreds of MB of churn that
+   * would exceed checkpoint_max_bytes and poison every restore. */
+  browser_profile_dir: process.env.SANDBOX_BROWSER_PROFILE_DIR ?? '/tmp/codeapi-browser-profile',
+  /* The MicroVM image is built hookless, so the AWS suspend/terminate lifecycle
+   * hooks never fire. This reaper is what actually bounds browser RSS on a VM
+   * that idles between conversation turns. */
+  browser_idle_ms: safeInt(process.env.SANDBOX_BROWSER_IDLE_MS, 300_000),
+  browser_viewport_width: safeInt(process.env.SANDBOX_BROWSER_VIEWPORT_WIDTH, 1280),
+  browser_viewport_height: safeInt(process.env.SANDBOX_BROWSER_VIEWPORT_HEIGHT, 800),
   job_uid_base: safeInt(process.env.SANDBOX_JOB_UID_BASE, 200000),
   job_gid_base: safeInt(process.env.SANDBOX_JOB_GID_BASE, 200000),
   job_uid_count: safeInt(

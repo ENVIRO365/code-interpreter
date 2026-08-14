@@ -1,6 +1,7 @@
 import express, { Router, type Request, type Response } from 'express';
 import { logger } from '../logger';
 import { bindSessionWorkspace, parseSessionBinding, unbindSessionWorkspace } from '../session-workspace';
+import { stopBrowser } from '../browser-process';
 
 /**
  * AWS Lambda MicroVM hook endpoints. The platform POSTs to
@@ -93,10 +94,22 @@ lifecycleRouter.post('/run', express.json({ limit: '32kb' }), (req: Request, res
 });
 
 lifecycleRouter.post('/resume', ackHook('resume'));
-lifecycleRouter.post('/suspend', ackHook('suspend'));
+
+/* The runner image is built hookless, so neither of the handlers below runs in
+ * the current deployment; browser lifetime is actually bounded by the idle
+ * reaper in browser-process.ts and by process shutdown. They are wired anyway
+ * because they become live the moment the image is rebased on the
+ * hook-routing Lambda base, and stopping Chromium before a suspend shrinks the
+ * suspended footprint that drives auto-resume latency. */
+lifecycleRouter.post('/suspend', (_req: Request, res: Response) => {
+  logger.info({ hook: 'suspend' }, 'MicroVM lifecycle hook invoked');
+  void stopBrowser().catch((err) => logger.error({ err }, 'Failed to stop browser on suspend'));
+  return res.status(200).json({ hook: 'suspend', status: 'ok' });
+});
 
 lifecycleRouter.post('/terminate', (_req: Request, res: Response) => {
   logger.info({ hook: 'terminate' }, 'MicroVM lifecycle hook invoked');
+  void stopBrowser().catch((err) => logger.error({ err }, 'Failed to stop browser on terminate'));
   void unbindSessionWorkspace().catch((err) => logger.error({ err }, 'Failed to unbind session workspace on terminate'));
   return res.status(200).json({ hook: 'terminate', status: 'ok' });
 });
