@@ -64,6 +64,39 @@ COPY javascript-packages.txt /javascript-packages.txt
 RUN chmod +x /package-init.sh && FORCE_REBUILD=true /package-init.sh
 
 # ============================================================================
+# Stage 1b: Materialize a relocatable Chromium prefix for the MicroVM runner
+#
+# `sandbox-build` removes apt/dpkg (see the rm block below) and strips every
+# setuid bit image-wide, so the browser cannot be installed there. It is also
+# the source of the K8s ext4 block root (`COPY --from=sandbox-build /` in
+# sandbox-rootfs-image), so installing into it would inflate every K8s runner
+# pod for a feature that needs a persistent session workspace K8s does not run.
+#
+# The prefix lands at /opt/browser and is COPY'd only into
+# lambda-microvm-runner. /opt is deliberately not one of the paths sandbox.cfg
+# mounts into the jail, so sandboxed code cannot exec the browser directly.
+#
+# Basing this on the same image as sandbox-build is what makes
+# `--download-only` correct: apt resolves the dependency closure against the
+# pristine base, and sandbox-build only ever adds packages to that same base,
+# so the closure is a guaranteed superset of what the runner is missing. No
+# hand-maintained library list, no ldd walk, no glibc skew.
+# ============================================================================
+FROM oven/bun:1.3.14-debian AS chromium-builder
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends --download-only \
+      chromium fonts-noto-color-emoji \
+ && mkdir -p /opt/browser \
+ && for deb in /var/cache/apt/archives/*.deb; do dpkg-deb -x "$deb" /opt/browser; done \
+ && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*.deb \
+ && ln -s "usr/lib/$(basename "$(ls -d /opt/browser/usr/lib/*-linux-gnu | head -1)")" \
+      /opt/browser/lib-multiarch \
+ && test -e /opt/browser/lib-multiarch/libnss3.so
+
+# ============================================================================
 # Stage 2: Build sandbox rootfs
 # ============================================================================
 FROM oven/bun:1.3.14-debian AS sandbox-build
@@ -161,10 +194,41 @@ RUN chmod +x ./entrypoint.sh
 FROM sandbox-build AS lambda-microvm-runner
 
 COPY --from=package-builder /pkgs /pkgs
+COPY --from=chromium-builder /opt/browser /opt/browser
 
+# The image-wide `chmod ug-s` in sandbox-build runs before this stage, so it
+# never sees /opt/browser. Chromium's SUID sandbox helper would arrive with its
+# setuid bit intact and silently violate that invariant; the browser launches
+# with --no-sandbox (the MicroVM is the trust boundary) so the helper is unused.
+RUN chmod ug-s /opt/browser/usr/lib/chromium/chrome-sandbox 2>/dev/null || true
+
+# Browser paths are image facts, so they are baked here. SANDBOX_BROWSER_ENABLED
+# is deliberately NOT set: the browse route stays 404 until an operator opts in
+# via `create-microvm-image.ts --env-json '{"SANDBOX_BROWSER_ENABLED":"true"}'`.
 ENV PORT=8080 \
     SANDBOX_PACKAGES_DIRECTORY=/pkgs \
-    SANDBOX_SESSION_WORKSPACE_ENABLED=true
+    SANDBOX_SESSION_WORKSPACE_ENABLED=true \
+    SANDBOX_BROWSER_BINARY=/opt/browser/usr/lib/chromium/chromium \
+    SANDBOX_BROWSER_LIBRARY_PATH=/opt/browser/lib-multiarch:/opt/browser/lib-multiarch/pulseaudio:/opt/browser/usr/lib/chromium \
+    SANDBOX_BROWSER_FONTCONFIG_PATH=/opt/browser/etc/fonts \
+    SANDBOX_BROWSER_CDP_PORT=9222
+
+# CI builds this target with `--output type=cacheonly`, which executes RUN steps
+# but never runs the image. These assertions are therefore the only thing standing
+# between a broken shared-library closure and a green build.
+#
+# The ldd check is not redundant with `--version`: Chromium resolves some
+# libraries lazily, so `--version` can succeed while a renderer-path dependency
+# is missing. libpulsecommon lives in a private `pulseaudio/` subdirectory rather
+# than the multiarch root, which is why the library path is not just one entry.
+RUN test -d /opt/browser/etc/fonts \
+ && test -n "$(ls /usr/share/fonts 2>/dev/null)" \
+ && missing="$(LD_LIBRARY_PATH="$SANDBOX_BROWSER_LIBRARY_PATH" \
+      ldd "$SANDBOX_BROWSER_BINARY" | grep 'not found' || true)" \
+ && { [ -z "$missing" ] || { echo "unresolved browser libraries:"; echo "$missing"; exit 1; }; } \
+ && LD_LIBRARY_PATH="$SANDBOX_BROWSER_LIBRARY_PATH" \
+    FONTCONFIG_PATH="$SANDBOX_BROWSER_FONTCONFIG_PATH" \
+    "$SANDBOX_BROWSER_BINARY" --version
 
 EXPOSE 8080/tcp
 ENTRYPOINT ["/sandbox_api/entrypoint.sh"]
