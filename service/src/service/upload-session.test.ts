@@ -82,4 +82,26 @@ describe('createUploadSessionRegistrar', () => {
     await expect(result).rejects.toThrow('Redis unavailable');
     expect(forwarded).toBe(false);
   });
+
+  test('keeps a pending registration timeout terminal when Redis rejects later', async () => {
+    const registration = deferred();
+    let forwarded = false;
+    const ensureSessionRegistered = createUploadSessionRegistrar(() => registration.promise);
+    const result = ensureSessionRegistered('user:user-1').then(async () => {
+      forwarded = true;
+      return 'uploaded';
+    });
+
+    expect(ensureSessionRegistered.rejectPending(
+      new Error('Upload session registration timed out'),
+    )).toBe(true);
+    await expect(result).rejects.toThrow('Upload session registration timed out');
+    expect(forwarded).toBe(false);
+
+    registration.reject(new Error('Redis unavailable after timeout'));
+    await Promise.resolve();
+
+    expect(forwarded).toBe(false);
+    expect(ensureSessionRegistered.rejectPending(new Error('too late'))).toBe(false);
+  });
 });

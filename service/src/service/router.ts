@@ -613,6 +613,13 @@ router.post('/upload/batch', uploadLimiter, async (req: t.AuthenticatedRequest, 
         const uploadTimeout = setTimeout(() => {
           abortController.abort('timeout');
           file.resume();
+          /* If Redis is still pending, make that shared registration barrier
+           * fail before any file promise settles. This prevents Busboy from
+           * finishing with a 400 while a later Redis rejection arrives too
+           * late to be surfaced as the batch-level dependency failure. */
+          if (ensureSessionRegistered.rejectPending(
+            new Error('Upload session registration timed out'),
+          )) return;
           resolve({ status: 'error', filename, error: 'Upload timeout' });
         }, UPLOAD_TIMEOUT_MS);
 
