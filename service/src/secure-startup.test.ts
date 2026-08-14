@@ -3,6 +3,7 @@ import { env } from './config';
 import {
   validateApiHardenedConfig,
   validateEgressGatewayHardenedConfig,
+  validateExecutionProfilePolicy,
   validateSandboxBackendPolicy,
   validateWorkerHardenedConfig,
 } from './secure-startup';
@@ -10,6 +11,7 @@ import {
 const savedEnv = { ...process.env };
 const saved = {
   hardened: env.HARDENED_SANDBOX_MODE,
+  executionProfile: env.EXECUTION_PROFILE,
   sandboxBackend: env.SANDBOX_BACKEND,
   ptcMode: env.PTC_MODE,
   runtimeSessionMode: env.RUNTIME_SESSION_MODE,
@@ -46,6 +48,7 @@ function restore(): void {
   }
   Object.assign(process.env, savedEnv);
   env.HARDENED_SANDBOX_MODE = saved.hardened;
+  env.EXECUTION_PROFILE = saved.executionProfile;
   env.SANDBOX_BACKEND = saved.sandboxBackend;
   env.PTC_MODE = saved.ptcMode;
   env.RUNTIME_SESSION_MODE = saved.runtimeSessionMode;
@@ -77,6 +80,61 @@ function restore(): void {
 }
 
 afterEach(restore);
+
+describe('execution profile policy', () => {
+  test('accepts the AWS-free default profile', () => {
+    env.EXECUTION_PROFILE = 'default';
+    env.SANDBOX_BACKEND = 'http';
+    env.RUNTIME_SESSION_MODE = 'stateless';
+    expect(() => validateExecutionProfilePolicy()).not.toThrow();
+  });
+
+  test('accepts affinity and strict stateful profiles', () => {
+    env.EXECUTION_PROFILE = 'stateful';
+    env.SANDBOX_BACKEND = 'lambda-microvm';
+    env.RUNTIME_SESSION_MODE = 'affinity';
+    expect(() => validateExecutionProfilePolicy()).not.toThrow();
+    env.RUNTIME_SESSION_MODE = 'strict';
+    expect(() => validateExecutionProfilePolicy()).not.toThrow();
+  });
+
+  test('does not require worker-only backend config on API-only pods', () => {
+    env.EXECUTION_PROFILE = 'stateful';
+    env.SANDBOX_BACKEND = 'http';
+    env.RUNTIME_SESSION_MODE = 'affinity';
+    expect(() => validateExecutionProfilePolicy({ requireBackendMatch: false })).not.toThrow();
+  });
+
+  test('rejects a default profile backed by AWS or stateful sessions', () => {
+    env.EXECUTION_PROFILE = 'default';
+    env.SANDBOX_BACKEND = 'lambda-microvm';
+    env.RUNTIME_SESSION_MODE = 'stateless';
+    expect(() => validateExecutionProfilePolicy()).toThrow(
+      'CODEAPI_EXECUTION_PROFILE=default requires',
+    );
+
+    env.SANDBOX_BACKEND = 'http';
+    env.RUNTIME_SESSION_MODE = 'affinity';
+    expect(() => validateExecutionProfilePolicy()).toThrow(
+      'CODEAPI_EXECUTION_PROFILE=default requires',
+    );
+  });
+
+  test('rejects a stateful profile without Lambda affinity', () => {
+    env.EXECUTION_PROFILE = 'stateful';
+    env.SANDBOX_BACKEND = 'http';
+    env.RUNTIME_SESSION_MODE = 'affinity';
+    expect(() => validateExecutionProfilePolicy()).toThrow(
+      'CODEAPI_EXECUTION_PROFILE=stateful requires',
+    );
+
+    env.SANDBOX_BACKEND = 'lambda-microvm';
+    env.RUNTIME_SESSION_MODE = 'stateless';
+    expect(() => validateExecutionProfilePolicy()).toThrow(
+      'CODEAPI_EXECUTION_PROFILE=stateful requires',
+    );
+  });
+});
 
 describe('hardened CodeAPI startup config', () => {
   test('rejects grant secrets in API and worker processes', () => {

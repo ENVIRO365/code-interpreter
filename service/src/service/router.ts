@@ -10,7 +10,7 @@ import { sessionAuth } from '../middleware/auth';
 import { executionLimiter, uploadLimiter, downloadLimiter, fetchLimiter } from '../middleware/limits';
 import { internalServiceHeaders } from '../internal-service-auth';
 import { resolveSessionKey, resolveOutputBucketSessionKey, SessionKeyResolutionError, parseUploadSessionKeyInput, type SessionKeyInput } from '../session-key';
-import { pyQueue, otherQueue, pyQueueEvents, otherQueueEvents, connection } from '../queue';
+import { pyQueue, otherQueue, pyQueueEvents, otherQueueEvents, queueNames, connection } from '../queue';
 import { sleep, getAxiosErrorDetails, publicExecutionFailure } from '../utils';
 import { env, jobCompletionWaitTimeoutMs, planLimits, resolveLanguage } from '../config';
 import { createPayload } from '../payload';
@@ -226,12 +226,13 @@ router.post('/exec', executionLimiter, async (req: t.AuthenticatedRequest, res) 
 
     const queue = language === Languages.py ? pyQueue : otherQueue;
     const queueEvents = language === Languages.py ? pyQueueEvents : otherQueueEvents;
-    const queueName = language === Languages.py ? 'python' : 'other';
+    const queueName = language === Languages.py ? queueNames.python : queueNames.other;
 
     const job = await withSpan('codeapi.job.enqueue', {
       'messaging.system': 'bullmq',
       'messaging.destination.name': queueName,
       'codeapi.language': language,
+      'codeapi.execution_profile': env.EXECUTION_PROFILE,
     }, () => {
       const traceCarrier = captureTraceCarrier();
       return queue.add(Jobs.execute, {
@@ -279,6 +280,7 @@ router.post('/exec', executionLimiter, async (req: t.AuthenticatedRequest, res) 
       'messaging.system': 'bullmq',
       'messaging.destination.name': queueName,
       'codeapi.language': language,
+      'codeapi.execution_profile': env.EXECUTION_PROFILE,
     }, () => job.waitUntilFinished(queueEvents, JOB_COMPLETION_WAIT_TIMEOUT_MS), 'CONSUMER');
 
     if (!isSyntheticRequest) {

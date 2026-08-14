@@ -3,8 +3,7 @@ import { Worker } from 'bullmq';
 import type * as t from './types';
 import { filterSystemLogs, applySystemReplacements, getAxiosErrorDetails, sandboxErrorMessageFromAxios } from './utils';
 import { jobProcessingDuration, jobsCompleted, jobsFailed, activeJobs, workerRunning } from './metrics';
-import { Queues } from './enum';
-import { connection } from './queue';
+import { connection, queueNames } from './queue';
 import { env, jobDeadlineAtMs } from './config';
 import { summarizeSandboxResponse, summarizeText } from './execution-log';
 import { createGatewayEgressGrant, restoreGatewaySandboxResult, revokeGatewayEgressGrant } from './egress-gateway-client';
@@ -238,7 +237,7 @@ async function processJobInner(job: t.ExecuteJob): Promise<t.ExecuteResult> {
 // Global workers - no INSTANCE_ID prefix
 // This enables horizontal scaling where any worker can process any job from the shared queue
 // Each worker respects its own concurrency limit based on its co-located sandbox capacity
-export const pyWorker = new Worker(Queues.python, processJob, {
+export const pyWorker = new Worker(queueNames.python, processJob, {
   connection,
   concurrency: env.PYTHON_CONCURRENCY,
   limiter: {
@@ -247,7 +246,7 @@ export const pyWorker = new Worker(Queues.python, processJob, {
   },
 });
 
-export const otherWorker = new Worker(Queues.other, processJob, {
+export const otherWorker = new Worker(queueNames.other, processJob, {
   connection,
   concurrency: env.OTHER_CONCURRENCY,
   limiter: {

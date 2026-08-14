@@ -246,6 +246,7 @@ builds.
 
 ```bash
 CODEAPI_SANDBOX_BACKEND=lambda-microvm
+CODEAPI_EXECUTION_PROFILE=stateful
 CODEAPI_RUNTIME_SESSION_MODE=affinity          # warm sessions + checkpoints
 LAMBDA_MICROVM_IMAGE_ARN=<from step 4>
 LAMBDA_MICROVM_IMAGE_VERSION=<exact version from step 4>  # required for affinity/strict
@@ -310,6 +311,7 @@ appear in `api/src/config.ts`.
 | Env | Default | Meaning |
 |---|---|---|
 | `CODEAPI_SANDBOX_BACKEND` | `http` | `http` (byte-identical to today) or `lambda-microvm`. |
+| `CODEAPI_EXECUTION_PROFILE` | inferred | `default` for the HTTP/stateless deployment or `stateful` for the Lambda affinity/strict deployment. Stateful API and worker processes consume isolated BullMQ queues. |
 | `CODEAPI_RUNTIME_SESSION_MODE` | `stateless` | `stateless` \| `affinity` \| `strict`. `affinity` and `strict` require the `lambda-microvm` backend. See [Operating modes](#operating-modes). |
 | `CODEAPI_RUNTIME_SESSION_LOCK_WAIT_MS` | `15000` | How long a stateful execution waits for the session lock before returning `RUNTIME_SESSION_BUSY` (HTTP 409). |
 

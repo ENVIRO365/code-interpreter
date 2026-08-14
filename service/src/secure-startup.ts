@@ -64,6 +64,41 @@ export function validateWorkerHardenedConfig(): void {
 }
 
 /**
+ * Make the endpoint identity trustworthy. Callers route by execution profile,
+ * so accepting a contradictory backend/session tuple would silently send work
+ * to the wrong infrastructure and could lose workspace continuity.
+ */
+export function validateExecutionProfilePolicy(options: {
+  requireBackendMatch?: boolean;
+} = {}): void {
+  const requireBackendMatch = options.requireBackendMatch ?? true;
+  if (env.EXECUTION_PROFILE === 'default') {
+    if (
+      env.RUNTIME_SESSION_MODE !== 'stateless'
+      || (requireBackendMatch && env.SANDBOX_BACKEND !== 'http')
+    ) {
+      throw new SecureStartupConfigError(
+        'CODEAPI_EXECUTION_PROFILE=default requires '
+          + (requireBackendMatch ? 'CODEAPI_SANDBOX_BACKEND=http and ' : '')
+          + 'CODEAPI_RUNTIME_SESSION_MODE=stateless',
+      );
+    }
+    return;
+  }
+
+  if (
+    env.RUNTIME_SESSION_MODE === 'stateless'
+    || (requireBackendMatch && env.SANDBOX_BACKEND !== 'lambda-microvm')
+  ) {
+    throw new SecureStartupConfigError(
+      'CODEAPI_EXECUTION_PROFILE=stateful requires '
+        + (requireBackendMatch ? 'CODEAPI_SANDBOX_BACKEND=lambda-microvm and ' : '')
+        + 'CODEAPI_RUNTIME_SESSION_MODE=affinity or strict',
+    );
+  }
+}
+
+/**
  * Backend-selection policy. Unlike the hardened-mode validators, this runs
  * unconditionally: a misconfigured backend must never half-start.
  */

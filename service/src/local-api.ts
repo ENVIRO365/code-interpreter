@@ -11,6 +11,7 @@ import express, { json, Router } from 'express';
 import serviceRouter from './service/router';
 import programmaticRouter from './service/programmatic-router';
 import { requestErrorLogger, requestNotFoundLogger } from './middleware/request-error-logger';
+import { executionProfileMiddleware } from './middleware/execution-profile';
 import { localAuth } from './auth/local';
 import { pyQueue, otherQueue, pyQueueEvents, otherQueueEvents, connection } from './queue';
 import { setStartupComplete } from './lifecycle';
@@ -19,10 +20,12 @@ import './workers';
 import { env } from './config';
 import logger from './logger';
 import { shutdownTelemetry, traceHttpRequest } from './telemetry';
+import { validateExecutionProfilePolicy } from './secure-startup';
 
 const app = express();
 app.disable('x-powered-by');
 app.set('trust proxy', 1);
+app.use(executionProfileMiddleware);
 let localShuttingDown = false;
 
 const v1 = Router();
@@ -52,6 +55,7 @@ app.use(requestErrorLogger);
 async function localStartup(): Promise<void> {
   logger.info('Starting local development server...');
   logger.info('⚠️  LOCAL MODE - No authentication required');
+  validateExecutionProfilePolicy();
 
   try {
     // Set a local user ID for session management

@@ -1,7 +1,26 @@
 import client, { register, Counter, Histogram, Gauge } from 'prom-client';
 import { normalizeMetricPath } from './httpPathNormalize';
+import { env } from './config';
 
 client.collectDefaultMetrics({ register });
+
+export const executionProfileInfo = new Gauge({
+  name: 'codeapi_execution_profile_info',
+  help: 'Static identity of this Code API execution deployment',
+  labelNames: ['profile', 'sandbox_backend', 'runtime_session_mode'] as const,
+});
+
+executionProfileInfo.set({
+  profile: env.EXECUTION_PROFILE,
+  sandbox_backend: env.SANDBOX_BACKEND,
+  runtime_session_mode: env.RUNTIME_SESSION_MODE,
+}, 1);
+
+export const executionProfileRequestRejections = new Counter({
+  name: 'codeapi_execution_profile_request_rejections_total',
+  help: 'Requests rejected because the expected execution profile was invalid or mismatched',
+  labelNames: ['reason'] as const,
+});
 
 // -- HTTP metrics (shared across Express and Bun servers) --
 export const httpRequestsTotal = new Counter({

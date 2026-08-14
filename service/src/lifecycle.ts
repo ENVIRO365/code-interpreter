@@ -3,7 +3,12 @@ import type { Express } from 'express';
 import { pyQueue, otherQueue, pyQueueEvents, otherQueueEvents, connection } from './queue';
 import { validateStartupAuthConfig } from './auth/startup';
 import { env } from './config';
-import { validateApiHardenedConfig, validateSandboxBackendPolicy, validateWorkerHardenedConfig } from './secure-startup';
+import {
+  validateApiHardenedConfig,
+  validateExecutionProfilePolicy,
+  validateSandboxBackendPolicy,
+  validateWorkerHardenedConfig,
+} from './secure-startup';
 import logger from './logger';
 import { shutdownTelemetry } from './telemetry';
 
@@ -75,6 +80,7 @@ function setupQueueListeners(queue: Queue, name: string): void {
 export async function startupApiOnly(): Promise<void> {
   logger.info('Starting API service (no workers)...');
   validateApiHardenedConfig();
+  validateExecutionProfilePolicy({ requireBackendMatch: false });
   /* No validateSandboxBackendPolicy() here: an API-only pod authenticates and
    * enqueues jobs, it never constructs the Lambda backend or checkpoint store.
    * Validating that policy would force worker-only config (LAMBDA_MICROVM_* and
@@ -97,6 +103,7 @@ export async function startupApiOnly(): Promise<void> {
 export async function startupWorkerOnly(): Promise<void> {
   logger.info('Starting Worker service...');
   validateWorkerHardenedConfig();
+  validateExecutionProfilePolicy();
   validateSandboxBackendPolicy();
 
   // Dynamically import workers to start them
@@ -131,6 +138,7 @@ async function gracefulStartup(): Promise<void> {
   logger.info('Starting up service (combined API + Workers)...');
   validateApiHardenedConfig();
   validateWorkerHardenedConfig();
+  validateExecutionProfilePolicy();
   validateSandboxBackendPolicy();
   await validateLifecycleAuthConfig();
 

@@ -22,6 +22,11 @@ internalServiceAuth:
 
 hardenedSandboxMode: true
 
+# Stable identity advertised by this API/worker deployment. The bundled chart
+# is the AWS-free HTTP/libkrun profile. A separate Lambda MicroVM deployment
+# must set this to `stateful`; the service then uses isolated BullMQ queues.
+executionProfile: default
+
 otel:
   enabled: false
   # OTLP/HTTP collector endpoint, e.g. "http://opentelemetry-collector.observability:4318".

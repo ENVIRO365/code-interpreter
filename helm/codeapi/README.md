@@ -53,6 +53,15 @@ platform rather than templated here: external ingress/service mesh, KEDA-style
 queue-depth autoscaling, and cloud-IAM secret delivery (the env hooks below
 cover all of them).
 
+**Execution profile.** This chart deploys the AWS-free `default` profile and
+sets `CODEAPI_EXECUTION_PROFILE=default` on both API and worker pods. That
+profile requires the HTTP sandbox backend in stateless mode and retains the
+existing `python-queue` / `other-queue` BullMQ names. A separate stateful
+Lambda MicroVM deployment must use `CODEAPI_EXECUTION_PROFILE=stateful`; it
+then consumes `stateful-python-queue` / `stateful-other-queue`, so both stacks
+may safely share Redis without consuming each other's jobs. Do not mix API
+and worker profile values within one deployment.
+
 **Authentication.** Outside local mode the API verifies JWTs. Configure the
 verifier through environment variables on the api component, e.g.:
 
