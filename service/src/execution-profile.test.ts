@@ -33,14 +33,21 @@ describe('execution profile resolution', () => {
 
 describe('execution profile queue isolation', () => {
   test('keeps the legacy queue names for the default profile', () => {
-    expect(queueNamesForExecutionProfile('default')).toEqual({
+    expect(queueNamesForExecutionProfile('default', 'explicit')).toEqual({
       python: 'python-queue',
       other: 'other-queue',
     });
   });
 
-  test('uses separate queues for stateful workers', () => {
-    expect(queueNamesForExecutionProfile('stateful')).toEqual({
+  test('keeps inferred stateful deployments on legacy queues during binary rollout', () => {
+    expect(queueNamesForExecutionProfile('stateful', 'inferred')).toEqual({
+      python: 'python-queue',
+      other: 'other-queue',
+    });
+  });
+
+  test('uses separate queues only for an explicit stateful deployment', () => {
+    expect(queueNamesForExecutionProfile('stateful', 'explicit')).toEqual({
       python: 'stateful-python-queue',
       other: 'stateful-other-queue',
     });

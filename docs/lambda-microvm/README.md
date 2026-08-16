@@ -311,7 +311,7 @@ appear in `api/src/config.ts`.
 | Env | Default | Meaning |
 |---|---|---|
 | `CODEAPI_SANDBOX_BACKEND` | `http` | `http` (byte-identical to today) or `lambda-microvm`. |
-| `CODEAPI_EXECUTION_PROFILE` | inferred | `default` for the HTTP/stateless deployment or `stateful` for the Lambda affinity/strict deployment. Stateful API and worker processes consume isolated BullMQ queues. |
+| `CODEAPI_EXECUTION_PROFILE` | inferred | `default` for the HTTP/stateless deployment or `stateful` for the Lambda affinity/strict deployment. An explicit `stateful` value selects isolated BullMQ queues. An inferred affinity/strict profile keeps the legacy queues only for a pre-profile binary rollout and must not share Redis with the default deployment. |
 | `CODEAPI_RUNTIME_SESSION_MODE` | `stateless` | `stateless` \| `affinity` \| `strict`. `affinity` and `strict` require the `lambda-microvm` backend. See [Operating modes](#operating-modes). |
 | `CODEAPI_RUNTIME_SESSION_LOCK_WAIT_MS` | `15000` | How long a stateful execution waits for the session lock before returning `RUNTIME_SESSION_BUSY` (HTTP 409). |
 

@@ -57,7 +57,10 @@ const connection = new IORedis({
 // This enables horizontal scaling where any worker can process any job
 // while the execution-profile prefix prevents HTTP and Lambda workers from
 // consuming each other's jobs when they share Redis.
-const queueNames = queueNamesForExecutionProfile(env.EXECUTION_PROFILE);
+const queueNames = queueNamesForExecutionProfile(
+  env.EXECUTION_PROFILE,
+  process.env.CODEAPI_EXECUTION_PROFILE == null ? 'inferred' : 'explicit',
+);
 const pyQueue = new Queue<t.JobData, t.JobResult, Jobs.execute>(queueNames.python, { connection });
 const otherQueue = new Queue<t.JobData, t.JobResult, Jobs.execute>(queueNames.other, { connection });
 

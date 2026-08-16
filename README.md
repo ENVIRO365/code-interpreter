@@ -37,6 +37,17 @@ workers. The default profile keeps the existing `python-queue` and
 `stateful-other-queue`. This allows both deployments to share Redis without
 cross-consuming jobs.
 
+An affinity/strict deployment upgraded from a pre-profile release may leave
+`CODEAPI_EXECUTION_PROFILE` unset for its first binary rollout. It still
+identifies itself as `stateful`, but temporarily keeps the legacy queue names
+so separately deployed APIs and workers remain compatible with old binaries.
+Move that deployment to the isolated stateful queues with a blue/green cutover:
+start replacement API and worker pools with the profile explicitly set to
+`stateful`, verify them together, switch the stateful endpoint, and drain the
+legacy pool. For rollback, switch the endpoint back before stopping the
+replacement pool. Do not run the inferred stateful compatibility mode beside a
+default deployment on the same Redis because both use the legacy queues.
+
 Trusted callers should send `X-CodeAPI-Expected-Profile: default|stateful` on
 every Code API request. A request that reaches the wrong deployment fails
 before enqueue with HTTP 409 and `code=execution_profile_mismatch`; every

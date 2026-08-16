@@ -62,6 +62,17 @@ then consumes `stateful-python-queue` / `stateful-other-queue`, so both stacks
 may safely share Redis without consuming each other's jobs. Do not mix API
 and worker profile values within one deployment.
 
+For an existing affinity/strict deployment from before execution profiles,
+first roll the new binary to API and worker pods with
+`CODEAPI_EXECUTION_PROFILE` still unset. The inferred stateful compatibility
+mode deliberately retains the legacy queues, so old and new binaries can
+overlap. Then create a replacement deployment with the profile explicitly set
+to `stateful`, verify its API and workers together, switch the stateful ingress,
+and drain the legacy deployment. Roll back by switching ingress to the legacy
+deployment before removing the replacement. Never share Redis between the
+inferred compatibility deployment and a default deployment: both consume the
+legacy queues.
+
 **Authentication.** Outside local mode the API verifies JWTs. Configure the
 verifier through environment variables on the api component, e.g.:
 

@@ -35,8 +35,15 @@ export function resolveExecutionProfile(
 
 export function queueNamesForExecutionProfile(
   profile: ExecutionProfile,
+  source: 'explicit' | 'inferred',
 ): ExecutionProfileQueueNames {
-  if (profile === 'stateful') {
+  /* A pre-profile affinity/strict deployment used the legacy queues. Keep
+   * inferred profiles on those names so API and worker Deployments can roll
+   * or roll back independently without temporarily losing their consumers.
+   * Queue isolation is an explicit cutover: operators bring up the stateful
+   * stack with CODEAPI_EXECUTION_PROFILE=stateful on both sides, then switch
+   * callers to its endpoint. */
+  if (profile === 'stateful' && source === 'explicit') {
     return {
       python: 'stateful-python-queue',
       other: 'stateful-other-queue',
