@@ -22,10 +22,11 @@ internalServiceAuth:
 
 hardenedSandboxMode: true
 
-# Stable identity advertised by this API/worker deployment. The bundled chart
-# is the AWS-free HTTP/libkrun profile. A separate Lambda MicroVM deployment
-# must set this to `stateful`; the service then uses isolated BullMQ queues.
-executionProfile: default
+# Stable identity advertised by this API/worker deployment. Leave empty for a
+# backwards-compatible inferred profile. Set explicitly to `default` or
+# `stateful` when deploying both stacks against shared Redis; explicit
+# `stateful` selects isolated BullMQ queues.
+executionProfile: ""
 
 otel:
   enabled: false

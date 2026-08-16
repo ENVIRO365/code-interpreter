@@ -9,7 +9,7 @@ afterEach(() => {
   env.EXECUTION_PROFILE = savedProfile;
 });
 
-function invoke(expectedProfile?: string): {
+function invoke(expectedProfile?: string, rawHeaders?: string[]): {
   headers: Record<string, string>;
   status?: number;
   body?: unknown;
@@ -23,6 +23,7 @@ function invoke(expectedProfile?: string): {
   } = { headers: {}, nextCalled: false };
   const req = {
     get: () => expectedProfile,
+    ...(rawHeaders ? { rawHeaders } : {}),
   } as unknown as Request;
   const res = {
     setHeader: (name: string, value: string) => {
@@ -60,8 +61,24 @@ describe('execution profile middleware', () => {
       headers: { 'X-CodeAPI-Execution-Profile': 'default' },
       status: 409,
       body: {
-        code: 'execution_profile_mismatch',
+        error: 'execution_profile_mismatch',
         expected_profile: 'stateful',
+        actual_profile: 'default',
+      },
+      nextCalled: false,
+    });
+  });
+
+  test('rejects duplicate expected-profile headers', () => {
+    env.EXECUTION_PROFILE = 'default';
+    expect(invoke('default', [
+      'X-CodeAPI-Expected-Profile', 'stateful',
+      'x-codeapi-expected-profile', 'default',
+    ])).toMatchObject({
+      status: 400,
+      body: {
+        error: 'invalid_execution_profile',
+        expected_profile: 'stateful,default',
         actual_profile: 'default',
       },
       nextCalled: false,

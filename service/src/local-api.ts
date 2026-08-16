@@ -21,16 +21,17 @@ import { env } from './config';
 import logger from './logger';
 import { shutdownTelemetry, traceHttpRequest } from './telemetry';
 import { validateExecutionProfilePolicy } from './secure-startup';
+import { configureExecutionProfileMetrics } from './metrics';
 
 const app = express();
 app.disable('x-powered-by');
 app.set('trust proxy', 1);
-app.use(executionProfileMiddleware);
 let localShuttingDown = false;
 
 const v1 = Router();
 
 app.use(traceHttpRequest('codeapi.local_api.request'));
+app.use(executionProfileMiddleware);
 app.use(json({ limit: env.HTTP_JSON_LIMIT }));
 
 // Health check
@@ -56,6 +57,11 @@ async function localStartup(): Promise<void> {
   logger.info('Starting local development server...');
   logger.info('⚠️  LOCAL MODE - No authentication required');
   validateExecutionProfilePolicy();
+  configureExecutionProfileMetrics({
+    profile: env.EXECUTION_PROFILE,
+    sandboxBackend: env.SANDBOX_BACKEND,
+    runtimeSessionMode: env.RUNTIME_SESSION_MODE,
+  });
 
   try {
     // Set a local user ID for session management

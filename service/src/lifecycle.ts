@@ -11,10 +11,19 @@ import {
 } from './secure-startup';
 import logger from './logger';
 import { shutdownTelemetry } from './telemetry';
+import { configureExecutionProfileMetrics } from './metrics';
 
 const { INSTANCE_ID } = env;
 let isShuttingDown = false;
 let isStartingUp = true;
+
+function configureProfileMetrics(): void {
+  configureExecutionProfileMetrics({
+    profile: env.EXECUTION_PROFILE,
+    sandboxBackend: env.SANDBOX_BACKEND,
+    runtimeSessionMode: env.RUNTIME_SESSION_MODE,
+  });
+}
 
 async function shutdownTracing(): Promise<void> {
   try {
@@ -87,6 +96,7 @@ export async function startupApiOnly(): Promise<void> {
    * the MINIO_* checkpoint creds) into API pods just to boot. The worker and
    * combined startups own that validation. */
   await validateLifecycleAuthConfig();
+  configureProfileMetrics();
 
   // Set up queue listeners for monitoring (optional, for observability)
   setupQueueListeners(pyQueue, 'Python');
@@ -105,6 +115,7 @@ export async function startupWorkerOnly(): Promise<void> {
   validateWorkerHardenedConfig();
   validateExecutionProfilePolicy();
   validateSandboxBackendPolicy();
+  configureProfileMetrics();
 
   // Dynamically import workers to start them
   const { pyWorker, otherWorker } = await import('./workers');
@@ -141,6 +152,7 @@ async function gracefulStartup(): Promise<void> {
   validateExecutionProfilePolicy();
   validateSandboxBackendPolicy();
   await validateLifecycleAuthConfig();
+  configureProfileMetrics();
 
   try {
     logger.info('Setting up queues...');

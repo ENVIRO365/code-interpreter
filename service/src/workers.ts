@@ -17,6 +17,7 @@ import { isSyntheticPrincipalSource } from './auth/synthetic';
 import { withSpan, withTraceContext } from './telemetry';
 import { workerDeadlineFailure } from './worker-error';
 import logger from './logger';
+import { validateQueuedExecutionProfile } from './execution-profile';
 
 const { INSTANCE_ID } = env;
 const WORKER_ID = `${INSTANCE_ID}-${process.pid}`;
@@ -31,6 +32,8 @@ async function processJob(job: t.ExecuteJob): Promise<t.ExecuteResult> {
     'messaging.operation.name': 'process',
     'messaging.message.id': typeof job.id === 'string' ? job.id : String(job.id ?? ''),
     'codeapi.language': job.data.payload?.language ?? 'unknown',
+    'codeapi.execution_profile': job.data.executionProfile ?? 'legacy',
+    'codeapi.worker_execution_profile': env.EXECUTION_PROFILE,
   }, () => processJobInner(job), 'CONSUMER'));
 }
 
@@ -56,6 +59,7 @@ async function processJobInner(job: t.ExecuteJob): Promise<t.ExecuteResult> {
     if (controller.signal.aborted) {
       throw new Error(`Job timed out after ${env.JOB_TIMEOUT}ms`);
     }
+    validateQueuedExecutionProfile(job.data.executionProfile, env.EXECUTION_PROFILE);
     let sandboxPayload = payload;
     let executionManifestClaims = job.data.executionManifestClaims;
     let egressGrantToken = job.data.egressGrantToken;

@@ -1,6 +1,8 @@
 import client, { register, Counter, Histogram, Gauge } from 'prom-client';
 import { normalizeMetricPath } from './httpPathNormalize';
-import { env } from './config';
+import type { ExecutionProfile } from './execution-profile';
+import type { RuntimeSessionMode } from './types/service';
+import type { SandboxBackend } from './sandbox-backend/types';
 
 client.collectDefaultMetrics({ register });
 
@@ -10,11 +12,18 @@ export const executionProfileInfo = new Gauge({
   labelNames: ['profile', 'sandbox_backend', 'runtime_session_mode'] as const,
 });
 
-executionProfileInfo.set({
-  profile: env.EXECUTION_PROFILE,
-  sandbox_backend: env.SANDBOX_BACKEND,
-  runtime_session_mode: env.RUNTIME_SESSION_MODE,
-}, 1);
+export function configureExecutionProfileMetrics(identity: {
+  profile: ExecutionProfile;
+  sandboxBackend: SandboxBackend['name'];
+  runtimeSessionMode: RuntimeSessionMode;
+}): void {
+  executionProfileInfo.reset();
+  executionProfileInfo.set({
+    profile: identity.profile,
+    sandbox_backend: identity.sandboxBackend,
+    runtime_session_mode: identity.runtimeSessionMode,
+  }, 1);
+}
 
 export const executionProfileRequestRejections = new Counter({
   name: 'codeapi_execution_profile_request_rejections_total',

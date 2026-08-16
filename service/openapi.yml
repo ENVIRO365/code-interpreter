@@ -40,24 +40,28 @@ components:
         enum: [default, stateful]
 
   responses:
-    InvalidExecutionProfile:
-      description: Invalid expected execution profile
+    BadRequest:
+      description: Invalid request or invalid expected execution profile
       headers:
         X-CodeAPI-Execution-Profile:
           $ref: '#/components/headers/ExecutionProfile'
       content:
         application/json:
           schema:
-            $ref: '#/components/schemas/ExecutionProfileError'
-    ExecutionProfileMismatch:
-      description: The request reached a different execution profile
+            anyOf:
+              - $ref: '#/components/schemas/Error'
+              - $ref: '#/components/schemas/ExecutionProfileError'
+    Conflict:
+      description: Request conflict or execution-profile mismatch
       headers:
         X-CodeAPI-Execution-Profile:
           $ref: '#/components/headers/ExecutionProfile'
       content:
         application/json:
           schema:
-            $ref: '#/components/schemas/ExecutionProfileError'
+            anyOf:
+              - $ref: '#/components/schemas/Error'
+              - $ref: '#/components/schemas/ExecutionProfileError'
 
   schemas:
     FileRef:
@@ -152,10 +156,12 @@ components:
             $ref: '#/components/schemas/RequestFile'
         runtime_session_hint:
           type: string
+          maxLength: 128
+          pattern: '^[A-Za-z0-9._:-]+$'
           description: >-
             Stable opaque hint for stateful runtime reuse. The server binds it
-            to the authenticated tenant and user. Ignored by the default
-            stateless profile.
+            to the authenticated tenant and user. Required in strict runtime
+            session mode and ignored by the default stateless profile.
 
     FileObject:
       type: object
@@ -203,16 +209,18 @@ components:
           type: string
         details:
           type: string
+        message:
+          type: string
 
     ExecutionProfileError:
       type: object
-      required: [error, code, actual_profile]
+      required: [error, message, actual_profile]
       properties:
         error:
           type: string
-        code:
-          type: string
           enum: [invalid_execution_profile, execution_profile_mismatch]
+        message:
+          type: string
         expected_profile:
           type: string
         actual_profile:
@@ -250,9 +258,9 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
         '400':
-          $ref: '#/components/responses/InvalidExecutionProfile'
+          $ref: '#/components/responses/BadRequest'
         '409':
-          $ref: '#/components/responses/ExecutionProfileMismatch'
+          $ref: '#/components/responses/Conflict'
         '503':
           description: Service unavailable
           content:
@@ -293,9 +301,9 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
         '400':
-          $ref: '#/components/responses/InvalidExecutionProfile'
+          $ref: '#/components/responses/BadRequest'
         '409':
-          $ref: '#/components/responses/ExecutionProfileMismatch'
+          $ref: '#/components/responses/Conflict'
 
   /upload:
     post:
@@ -333,9 +341,9 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
         '400':
-          $ref: '#/components/responses/InvalidExecutionProfile'
+          $ref: '#/components/responses/BadRequest'
         '409':
-          $ref: '#/components/responses/ExecutionProfileMismatch'
+          $ref: '#/components/responses/Conflict'
 
   /files/{session_id}:
     get:
@@ -365,9 +373,9 @@ paths:
                 items:
                   $ref: '#/components/schemas/FileObject'
         '400':
-          $ref: '#/components/responses/InvalidExecutionProfile'
+          $ref: '#/components/responses/BadRequest'
         '409':
-          $ref: '#/components/responses/ExecutionProfileMismatch'
+          $ref: '#/components/responses/Conflict'
 
   /files/{session_id}/{fileId}:
     delete:
@@ -397,6 +405,6 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
         '400':
-          $ref: '#/components/responses/InvalidExecutionProfile'
+          $ref: '#/components/responses/BadRequest'
         '409':
-          $ref: '#/components/responses/ExecutionProfileMismatch'
+          $ref: '#/components/responses/Conflict'

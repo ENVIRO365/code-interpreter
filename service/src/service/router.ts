@@ -246,6 +246,7 @@ router.post('/exec', executionLimiter, async (req: t.AuthenticatedRequest, res) 
         executionId: execution_id,
         tenantId: identity.storageNamespace,
         canonicalUserId: identity.canonicalUserId,
+        executionProfile: env.EXECUTION_PROFILE,
         ...(runtimeSessionId != null ? { runtimeSessionId } : {}),
         runtimeSessionMode,
         executionManifestClaims: sandboxSecurity.executionManifestClaims,

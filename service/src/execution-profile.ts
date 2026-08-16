@@ -1,6 +1,7 @@
 export const EXECUTION_PROFILES = ['default', 'stateful'] as const;
 
 export type ExecutionProfile = typeof EXECUTION_PROFILES[number];
+export type ExecutionProfileSource = 'explicit' | 'inferred';
 
 export const EXPECTED_EXECUTION_PROFILE_HEADER = 'X-CodeAPI-Expected-Profile';
 export const EXECUTION_PROFILE_HEADER = 'X-CodeAPI-Execution-Profile';
@@ -14,9 +15,10 @@ export function resolveExecutionProfile(
   raw: string | undefined,
   runtimeSessionMode: 'stateless' | 'affinity' | 'strict',
 ): ExecutionProfile {
-  if (raw != null) {
-    if (EXECUTION_PROFILES.includes(raw as ExecutionProfile)) {
-      return raw as ExecutionProfile;
+  const configuredChoice = raw?.trim();
+  if (configuredChoice) {
+    if (EXECUTION_PROFILES.includes(configuredChoice as ExecutionProfile)) {
+      return configuredChoice as ExecutionProfile;
     }
     throw new Error(
       `CODEAPI_EXECUTION_PROFILE must be one of: ${EXECUTION_PROFILES.join(', ')}`,
@@ -33,9 +35,28 @@ export function resolveExecutionProfile(
     : 'default';
 }
 
+export function resolveExecutionProfileSource(
+  raw: string | undefined,
+): ExecutionProfileSource {
+  return raw?.trim() ? 'explicit' : 'inferred';
+}
+
+const LEGACY_QUEUE_NAMES: ExecutionProfileQueueNames = {
+  python: 'python-queue',
+  other: 'other-queue',
+};
+
+const EXPLICIT_PROFILE_QUEUE_NAMES: Record<ExecutionProfile, ExecutionProfileQueueNames> = {
+  default: LEGACY_QUEUE_NAMES,
+  stateful: {
+    python: 'stateful-python-queue',
+    other: 'stateful-other-queue',
+  },
+};
+
 export function queueNamesForExecutionProfile(
   profile: ExecutionProfile,
-  source: 'explicit' | 'inferred',
+  source: ExecutionProfileSource,
 ): ExecutionProfileQueueNames {
   /* A pre-profile affinity/strict deployment used the legacy queues. Keep
    * inferred profiles on those names so API and worker Deployments can roll
@@ -43,16 +64,9 @@ export function queueNamesForExecutionProfile(
    * Queue isolation is an explicit cutover: operators bring up the stateful
    * stack with CODEAPI_EXECUTION_PROFILE=stateful on both sides, then switch
    * callers to its endpoint. */
-  if (profile === 'stateful' && source === 'explicit') {
-    return {
-      python: 'stateful-python-queue',
-      other: 'stateful-other-queue',
-    };
-  }
-  return {
-    python: 'python-queue',
-    other: 'other-queue',
-  };
+  return source === 'explicit'
+    ? EXPLICIT_PROFILE_QUEUE_NAMES[profile]
+    : LEGACY_QUEUE_NAMES;
 }
 
 export type ExecutionProfileExpectation =
@@ -61,8 +75,8 @@ export type ExecutionProfileExpectation =
     ok: false;
     status: 400 | 409;
     body: {
-      error: string;
-      code: 'invalid_execution_profile' | 'execution_profile_mismatch';
+      error: 'invalid_execution_profile' | 'execution_profile_mismatch';
+      message: string;
       expected_profile?: string;
       actual_profile: ExecutionProfile;
     };
@@ -79,8 +93,8 @@ export function checkExecutionProfileExpectation(
       ok: false,
       status: 400,
       body: {
-        error: `Invalid execution profile: ${rawExpectedProfile}`,
-        code: 'invalid_execution_profile',
+        error: 'invalid_execution_profile',
+        message: `Invalid execution profile: ${rawExpectedProfile}`,
         expected_profile: rawExpectedProfile,
         actual_profile: actualProfile,
       },
@@ -92,8 +106,8 @@ export function checkExecutionProfileExpectation(
       ok: false,
       status: 409,
       body: {
-        error: `Expected the ${rawExpectedProfile} execution profile, but reached ${actualProfile}`,
-        code: 'execution_profile_mismatch',
+        error: 'execution_profile_mismatch',
+        message: `Expected the ${rawExpectedProfile} execution profile, but reached ${actualProfile}`,
         expected_profile: rawExpectedProfile,
         actual_profile: actualProfile,
       },
@@ -101,4 +115,21 @@ export function checkExecutionProfileExpectation(
   }
 
   return { ok: true };
+}
+
+/** Reject producer/consumer profile drift before a worker invokes a sandbox.
+ * Missing profile is accepted only for jobs queued by pre-profile binaries. */
+export function validateQueuedExecutionProfile(
+  jobProfile: unknown,
+  workerProfile: ExecutionProfile,
+): void {
+  if (jobProfile == null) return;
+  if (!EXECUTION_PROFILES.includes(jobProfile as ExecutionProfile)) {
+    throw new Error(`Queued job has invalid execution profile: ${String(jobProfile)}`);
+  }
+  if (jobProfile !== workerProfile) {
+    throw new Error(
+      `Queued job targets the ${jobProfile} execution profile, but worker serves ${workerProfile}`,
+    );
+  }
 }

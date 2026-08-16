@@ -59,7 +59,7 @@ const connection = new IORedis({
 // consuming each other's jobs when they share Redis.
 const queueNames = queueNamesForExecutionProfile(
   env.EXECUTION_PROFILE,
-  process.env.CODEAPI_EXECUTION_PROFILE == null ? 'inferred' : 'explicit',
+  env.EXECUTION_PROFILE_SOURCE,
 );
 const pyQueue = new Queue<t.JobData, t.JobResult, Jobs.execute>(queueNames.python, { connection });
 const otherQueue = new Queue<t.JobData, t.JobResult, Jobs.execute>(queueNames.other, { connection });

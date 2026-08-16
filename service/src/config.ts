@@ -3,7 +3,10 @@ dotenv.config();
 import { nanoid } from 'nanoid';
 import type * as t from './types';
 import { Languages } from './enum';
-import { resolveExecutionProfile } from './execution-profile';
+import {
+  resolveExecutionProfile,
+  resolveExecutionProfileSource,
+} from './execution-profile';
 
 export const languageConfig: Record<Languages | string, t.LanguageConfig | undefined> = {
   [Languages.bash]: { language: 'bash', version: '5.2.0', fileName: 'script.sh' },
@@ -367,6 +370,9 @@ export const env = {
   EXECUTION_PROFILE: resolveExecutionProfile(
     process.env.CODEAPI_EXECUTION_PROFILE,
     runtimeSessionMode,
+  ),
+  EXECUTION_PROFILE_SOURCE: resolveExecutionProfileSource(
+    process.env.CODEAPI_EXECUTION_PROFILE,
   ),
   RUNTIME_SESSION_LOCK_WAIT_MS: configuredNumber(
     process.env.CODEAPI_RUNTIME_SESSION_LOCK_WAIT_MS,

@@ -53,14 +53,42 @@ platform rather than templated here: external ingress/service mesh, KEDA-style
 queue-depth autoscaling, and cloud-IAM secret delivery (the env hooks below
 cover all of them).
 
-**Execution profile.** This chart deploys the AWS-free `default` profile and
-sets `CODEAPI_EXECUTION_PROFILE=default` on both API and worker pods. That
-profile requires the HTTP sandbox backend in stateless mode and retains the
-existing `python-queue` / `other-queue` BullMQ names. A separate stateful
-Lambda MicroVM deployment must use `CODEAPI_EXECUTION_PROFILE=stateful`; it
-then consumes `stateful-python-queue` / `stateful-other-queue`, so both stacks
-may safely share Redis without consuming each other's jobs. Do not mix API
-and worker profile values within one deployment.
+**Execution profile.** By default this chart leaves
+`CODEAPI_EXECUTION_PROFILE` unset. Its bundled HTTP/stateless configuration is
+inferred as the AWS-free `default` profile and retains the existing
+`python-queue` / `other-queue` BullMQ names. Set `executionProfile: default`
+explicitly when deploying it beside a stateful stack. A separate stateful
+Lambda MicroVM deployment must use `executionProfile: stateful`; it then
+consumes `stateful-python-queue` / `stateful-other-queue`, so both stacks may
+safely share Redis without consuming each other's jobs. Do not mix API and
+worker profile values within one deployment.
+
+The chart does not provision Lambda MicroVM infrastructure. Supply its
+runtime settings to both the API and worker (and AWS credentials or workload
+identity to the worker) through the existing environment hooks, for example:
+
+```yaml
+executionProfile: stateful
+api:
+  extraEnv:
+    - name: CODEAPI_RUNTIME_SESSION_MODE
+      value: affinity
+workerSandbox:
+  extraEnv:
+    - name: CODEAPI_SANDBOX_BACKEND
+      value: lambda-microvm
+    - name: CODEAPI_RUNTIME_SESSION_MODE
+      value: affinity
+    - name: LAMBDA_MICROVM_IMAGE_ARN
+      value: arn:aws:lambda:REGION:ACCOUNT:microvm-image:NAME
+    - name: LAMBDA_MICROVM_IMAGE_VERSION
+      value: "VERSION"
+```
+
+The worker also needs the remaining Lambda networking, checkpoint-store, and
+hardening variables documented in `docs/lambda-microvm/README.md`. This chart
+still renders its bundled sandbox-runner, though a Lambda worker does not call
+it; a platform-specific stateful deployment may omit that component.
 
 For an existing affinity/strict deployment from before execution profiles,
 first roll the new binary to API and worker pods with

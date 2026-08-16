@@ -3,6 +3,8 @@ import {
   checkExecutionProfileExpectation,
   queueNamesForExecutionProfile,
   resolveExecutionProfile,
+  resolveExecutionProfileSource,
+  validateQueuedExecutionProfile,
 } from './execution-profile';
 
 describe('execution profile resolution', () => {
@@ -25,9 +27,10 @@ describe('execution profile resolution', () => {
     expect(() => resolveExecutionProfile('lambda', 'affinity')).toThrow(
       'CODEAPI_EXECUTION_PROFILE must be one of: default, stateful',
     );
-    expect(() => resolveExecutionProfile('', 'stateless')).toThrow(
-      'CODEAPI_EXECUTION_PROFILE',
-    );
+    expect(resolveExecutionProfile('', 'stateless')).toBe('default');
+    expect(resolveExecutionProfile('   ', 'affinity')).toBe('stateful');
+    expect(resolveExecutionProfileSource('')).toBe('inferred');
+    expect(resolveExecutionProfileSource('stateful')).toBe('explicit');
   });
 });
 
@@ -68,8 +71,8 @@ describe('execution profile request assertion', () => {
       ok: false,
       status: 409,
       body: {
-        error: 'Expected the stateful execution profile, but reached default',
-        code: 'execution_profile_mismatch',
+        error: 'execution_profile_mismatch',
+        message: 'Expected the stateful execution profile, but reached default',
         expected_profile: 'stateful',
         actual_profile: 'default',
       },
@@ -81,10 +84,26 @@ describe('execution profile request assertion', () => {
       ok: false,
       status: 400,
       body: {
-        code: 'invalid_execution_profile',
+        error: 'invalid_execution_profile',
         expected_profile: 'aws',
         actual_profile: 'default',
       },
     });
+  });
+});
+
+describe('queued execution profile validation', () => {
+  test('accepts matching and legacy jobs', () => {
+    expect(() => validateQueuedExecutionProfile('stateful', 'stateful')).not.toThrow();
+    expect(() => validateQueuedExecutionProfile(undefined, 'default')).not.toThrow();
+  });
+
+  test('rejects invalid and cross-profile jobs', () => {
+    expect(() => validateQueuedExecutionProfile('invalid', 'default')).toThrow(
+      'Queued job has invalid execution profile',
+    );
+    expect(() => validateQueuedExecutionProfile('stateful', 'default')).toThrow(
+      'Queued job targets the stateful execution profile, but worker serves default',
+    );
   });
 });

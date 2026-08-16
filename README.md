@@ -37,10 +37,12 @@ workers. The default profile keeps the existing `python-queue` and
 `stateful-other-queue`. This allows both deployments to share Redis without
 cross-consuming jobs.
 
-An affinity/strict deployment upgraded from a pre-profile release may leave
-`CODEAPI_EXECUTION_PROFILE` unset for its first binary rollout. It still
-identifies itself as `stateful`, but temporarily keeps the legacy queue names
-so separately deployed APIs and workers remain compatible with old binaries.
+An existing Lambda MicroVM deployment upgraded from a pre-profile release may
+leave `CODEAPI_EXECUTION_PROFILE` unset for its first binary rollout. An
+affinity/strict deployment still identifies itself as `stateful`; a stateless
+Lambda deployment identifies itself as `default`. Both temporarily keep the
+legacy queue names so separately deployed APIs and workers remain compatible
+with old binaries.
 Move that deployment to the isolated stateful queues with a blue/green cutover:
 start replacement API and worker pools with the profile explicitly set to
 `stateful`, verify them together, switch the stateful endpoint, and drain the
@@ -50,7 +52,7 @@ default deployment on the same Redis because both use the legacy queues.
 
 Trusted callers should send `X-CodeAPI-Expected-Profile: default|stateful` on
 every Code API request. A request that reaches the wrong deployment fails
-before enqueue with HTTP 409 and `code=execution_profile_mismatch`; every
+before enqueue with HTTP 409 and `error=execution_profile_mismatch`; every
 response advertises the actual deployment in `X-CodeAPI-Execution-Profile`.
 Omitting the expected-profile header remains supported for older clients, but
 provides no wrong-endpoint protection. There is deliberately no silent

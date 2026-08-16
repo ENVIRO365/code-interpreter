@@ -7,6 +7,21 @@ import {
 } from '../execution-profile';
 import { executionProfileRequestRejections } from '../metrics';
 
+function expectedExecutionProfile(req: Request): string | undefined {
+  const values: string[] = [];
+  const rawHeaders = Array.isArray(req.rawHeaders) ? req.rawHeaders : [];
+  for (let index = 0; index < rawHeaders.length; index += 2) {
+    if (rawHeaders[index]?.toLowerCase() === EXPECTED_EXECUTION_PROFILE_HEADER.toLowerCase()) {
+      values.push(rawHeaders[index + 1] ?? '');
+    }
+  }
+  /* Joining makes duplicate assertions invalid even when an HTTP runtime
+   * would otherwise collapse them with last-value-wins semantics. */
+  return values.length > 0
+    ? values.join(',')
+    : req.get(EXPECTED_EXECUTION_PROFILE_HEADER);
+}
+
 /**
  * Advertise this deployment's profile and fail closed when a trusted caller
  * reaches the wrong endpoint. Apply before routing so no file, programmatic,
@@ -20,7 +35,7 @@ export function executionProfileMiddleware(
   res.setHeader(EXECUTION_PROFILE_HEADER, env.EXECUTION_PROFILE);
 
   const expectation = checkExecutionProfileExpectation(
-    req.get(EXPECTED_EXECUTION_PROFILE_HEADER),
+    expectedExecutionProfile(req),
     env.EXECUTION_PROFILE,
   );
   if (expectation.ok) {
@@ -29,7 +44,7 @@ export function executionProfileMiddleware(
   }
 
   executionProfileRequestRejections.inc({
-    reason: expectation.body.code === 'execution_profile_mismatch'
+    reason: expectation.body.error === 'execution_profile_mismatch'
       ? 'mismatch'
       : 'invalid',
   });

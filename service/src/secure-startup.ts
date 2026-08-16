@@ -73,9 +73,14 @@ export function validateExecutionProfilePolicy(options: {
 } = {}): void {
   const requireBackendMatch = options.requireBackendMatch ?? true;
   if (env.EXECUTION_PROFILE === 'default') {
+    const compatibleBackend = env.SANDBOX_BACKEND === 'http'
+      || (
+        env.EXECUTION_PROFILE_SOURCE === 'inferred'
+        && env.SANDBOX_BACKEND === 'lambda-microvm'
+      );
     if (
       env.RUNTIME_SESSION_MODE !== 'stateless'
-      || (requireBackendMatch && env.SANDBOX_BACKEND !== 'http')
+      || (requireBackendMatch && !compatibleBackend)
     ) {
       throw new SecureStartupConfigError(
         'CODEAPI_EXECUTION_PROFILE=default requires '
