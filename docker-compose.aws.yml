@@ -1,0 +1,84 @@
+# AWS dev overlay - Lambda MicroVM sandbox backend, no local sandbox-runner.
+#
+# The control plane (api, worker, redis, minio, file/tool servers, egress
+# gateway) runs on the EC2 instance; every execution launches an AWS Lambda
+# MicroVM (Firecracker) instead of the local NsJail sandbox-runner, so this
+# host needs no KVM, no privileged containers, and no seccomp/cap tuning.
+# See docs/lambda-microvm/README.md for the backend architecture.
+#
+# Usage (on the instance, .env rendered from Secrets Manager
+# dev/synapseai/codeapi-env at 0600 first):
+#   docker compose -f docker-compose.yaml -f docker-compose.aws.yml up -d --build
+#
+# Port posture: ONLY two host bindings, neither on a public interface.
+#   172.17.0.1:3112  api            (host.docker.internal target for LibreChat)
+#   127.0.0.1:3190   egress gateway (fronted publicly by the Caddy vhost
+#                                    codeapi-egress.synapse-ai-dev.duckdns.org
+#                                    for MicroVM runner file/tool egress)
+# redis, minio, and the file server publish nothing; peers reach them on the
+# compose network.
+
+services:
+    api:
+        ports: !override
+            - 172.17.0.1:3112:3112
+        environment:
+            - CODEAPI_SANDBOX_BACKEND=${CODEAPI_SANDBOX_BACKEND:?}
+            - CODEAPI_RUNTIME_SESSION_MODE=${CODEAPI_RUNTIME_SESSION_MODE:-stateless}
+            - LAMBDA_MICROVM_IMAGE_ARN=${LAMBDA_MICROVM_IMAGE_ARN:-}
+            - LAMBDA_MICROVM_IMAGE_VERSION=${LAMBDA_MICROVM_IMAGE_VERSION:-}
+            - LAMBDA_MICROVM_REGION=${LAMBDA_MICROVM_REGION:-us-east-1}
+            - REDIS_PASSWORD=${REDIS_PASSWORD:?}
+
+    service-worker:
+        # The Lambda MicroVM backend replaces the local sandbox; the worker
+        # must not wait on (or ever reach) a sandbox-runner container.
+        depends_on: !override
+            redis:
+                condition: service_started
+        environment:
+            - CODEAPI_SANDBOX_BACKEND=${CODEAPI_SANDBOX_BACKEND:?}
+            - CODEAPI_RUNTIME_SESSION_MODE=${CODEAPI_RUNTIME_SESSION_MODE:-stateless}
+            - LAMBDA_MICROVM_IMAGE_ARN=${LAMBDA_MICROVM_IMAGE_ARN:?}
+            - LAMBDA_MICROVM_IMAGE_VERSION=${LAMBDA_MICROVM_IMAGE_VERSION:-}
+            - LAMBDA_MICROVM_EXECUTION_ROLE_ARN=${LAMBDA_MICROVM_EXECUTION_ROLE_ARN:?}
+            - LAMBDA_MICROVM_LOG_GROUP=${LAMBDA_MICROVM_LOG_GROUP:?}
+            - LAMBDA_MICROVM_REGION=${LAMBDA_MICROVM_REGION:-us-east-1}
+            - LAMBDA_MICROVM_INGRESS_CONNECTOR_ARNS=${LAMBDA_MICROVM_INGRESS_CONNECTOR_ARNS:?}
+            - AWS_REGION=${LAMBDA_MICROVM_REGION:-us-east-1}
+            # By-reference input objects are fetched here and pushed into the
+            # MicroVM's runner cache (the VM cannot reach the file server).
+            - FILE_SERVER_URL=http://file_server:3000
+            - REDIS_PASSWORD=${REDIS_PASSWORD:?}
+
+    # Inactive on AWS: compute runs in Lambda MicroVMs. Enable the
+    # local-sandbox profile only for NsJail-on-host experiments.
+    sandbox-runner:
+        profiles: ["local-sandbox"]
+
+    egress_gateway:
+        ports: !override
+            - 127.0.0.1:3190:3190
+        environment:
+            - REDIS_PASSWORD=${REDIS_PASSWORD:?}
+
+    tool_call_server:
+        environment:
+            - REDIS_PASSWORD=${REDIS_PASSWORD:?}
+
+    file_server:
+        ports: !override []
+        environment:
+            - MINIO_ACCESS_KEY=${MINIO_ROOT_USER:?}
+            - MINIO_SECRET_KEY=${MINIO_ROOT_PASSWORD:?}
+            - REDIS_PASSWORD=${REDIS_PASSWORD:?}
+
+    redis:
+        command: ["redis-server", "--requirepass", "${REDIS_PASSWORD:?}"]
+        ports: !override []
+
+    minio:
+        ports: !override []
+        environment:
+            - MINIO_ROOT_USER=${MINIO_ROOT_USER:?}
+            - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD:?}
