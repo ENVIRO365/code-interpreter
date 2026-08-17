@@ -167,7 +167,11 @@ ENV PORT=8080 \
     SANDBOX_SESSION_WORKSPACE_ENABLED=true
 
 EXPOSE 8080/tcp
-ENTRYPOINT ["/sandbox_api/entrypoint.sh"]
+# Explicit interpreter: the Lambda MicroVMs image builder fails its boot phase
+# (CREATE_FAILED, 'An unknown error occurred.', no container stdout) when the
+# entrypoint is a shebang script exec'd directly, while an ELF entrypoint works.
+# Locally (runc) both forms behave identically.
+ENTRYPOINT ["/bin/bash", "/sandbox_api/entrypoint.sh"]
 
 # ============================================================================
 # Stage 3: Build the Rust launcher binary (Fedora for libkrun ABI)
