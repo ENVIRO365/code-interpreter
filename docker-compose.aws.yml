@@ -29,6 +29,11 @@ services:
             - LAMBDA_MICROVM_IMAGE_VERSION=${LAMBDA_MICROVM_IMAGE_VERSION:-}
             - LAMBDA_MICROVM_REGION=${LAMBDA_MICROVM_REGION:-us-east-1}
             - REDIS_PASSWORD=${REDIS_PASSWORD:?}
+            # The API prepares execution-manifest claims (service/router.ts ->
+            # prepareSandboxJobSecurity); in non-hardened mode it skips them
+            # unless the manifest key env is present. Base compose only sets it
+            # on the worker, so the runner would reject execs (missing header).
+            - CODEAPI_EXECUTION_MANIFEST_PRIVATE_KEY=${CODEAPI_EXECUTION_MANIFEST_PRIVATE_KEY:?}
 
     service-worker:
         # The Lambda MicroVM backend replaces the local sandbox; the worker
