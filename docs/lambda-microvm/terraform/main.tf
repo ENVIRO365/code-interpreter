@@ -345,15 +345,10 @@ data "aws_iam_policy_document" "worker_microvm_control" {
     effect    = "Allow"
     actions   = ["iam:PassRole"]
     resources = [aws_iam_role.execution.arn]
-    condition {
-      test     = "StringEquals"
-      variable = "iam:PassedToService"
-      # RunMicrovm's PassRole check evaluates iam:PassedToService against the
-      # MicroVMs service principal, not plain lambda.amazonaws.com; with only
-      # the latter the worker gets AccessDenied ('no identity-based policy
-      # allows iam:PassRole') despite this statement matching the role ARN.
-      values   = ["lambda.amazonaws.com", "lambda-microvms.amazonaws.com"]
-    }
+    # No iam:PassedToService condition: RunMicrovm's PassRole evaluation does
+    # not match lambda.amazonaws.com (nor lambda-microvms.amazonaws.com), and
+    # AWS does not document the service principal it passes. The statement is
+    # still least-privilege via the exact execution-role resource pin.
   }
 
   statement {
