@@ -34,6 +34,13 @@ services:
             # unless the manifest key env is present. Base compose only sets it
             # on the worker, so the runner would reject execs (missing header).
             - CODEAPI_EXECUTION_MANIFEST_PRIVATE_KEY=${CODEAPI_EXECUTION_MANIFEST_PRIVATE_KEY:?}
+            # Non-hardened grant mode: setting the grant secret here turns on
+            # egress-grant minting (sandbox-egress.ts) so the MicroVM runner can
+            # upload generated files through the public gateway vhost. Without
+            # it the runner has EGRESS_GATEWAY_URL but no grant and silently
+            # drops generated files. (Hardened mode forbids this var here; we
+            # run non-hardened with INTERNET_EGRESS.)
+            - CODEAPI_EGRESS_GRANT_SECRET=${CODEAPI_EGRESS_GRANT_SECRET:?}
 
     service-worker:
         # The Lambda MicroVM backend replaces the local sandbox; the worker
@@ -44,6 +51,7 @@ services:
         environment:
             - CODEAPI_SANDBOX_BACKEND=${CODEAPI_SANDBOX_BACKEND:?}
             - CODEAPI_RUNTIME_SESSION_MODE=${CODEAPI_RUNTIME_SESSION_MODE:-stateless}
+            - CODEAPI_EGRESS_GRANT_SECRET=${CODEAPI_EGRESS_GRANT_SECRET:?}
             - LAMBDA_MICROVM_IMAGE_ARN=${LAMBDA_MICROVM_IMAGE_ARN:?}
             - LAMBDA_MICROVM_IMAGE_VERSION=${LAMBDA_MICROVM_IMAGE_VERSION:-}
             - LAMBDA_MICROVM_EXECUTION_ROLE_ARN=${LAMBDA_MICROVM_EXECUTION_ROLE_ARN:?}
