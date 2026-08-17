@@ -3,7 +3,6 @@ import type { Request } from 'express';
 import type { ExecutionManifestClaims } from '../execution-manifest';
 import type { ExecutionIdentity } from '../execution-identity';
 import type { CodeApiPrincipal } from '../auth/principal';
-import type { ExecutionProfile } from '../execution-profile';
 import { Jobs } from '@/enum/service';
 
 /**
@@ -251,8 +250,6 @@ export type JobData = {
   executionId?: string;
   tenantId?: string;
   canonicalUserId?: string;
-  /** Producer deployment identity. Optional only for pre-profile queued jobs. */
-  executionProfile?: ExecutionProfile;
   /**
    * Server-derived runtime session identity. Absence is stateless unless
    * strict mode requires it; explicit exemptions document intentional gaps.

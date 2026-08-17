@@ -2,7 +2,6 @@ import express, { json, Router } from 'express';
 import { startServer, gracefulShutdown } from './lifecycle';
 import { apiKeyAuth } from './middleware/auth';
 import { requestErrorLogger, requestNotFoundLogger } from './middleware/request-error-logger';
-import { executionProfileMiddleware } from './middleware/execution-profile';
 import serviceRouter from './service/router';
 import programmaticRouter from './service/programmatic-router';
 import { connection } from './queue';
@@ -12,7 +11,6 @@ import logger from './logger';
 const app = express();
 app.disable('x-powered-by');
 app.set('trust proxy', 1);
-app.use(executionProfileMiddleware);
 
 const v1 = Router();
 
