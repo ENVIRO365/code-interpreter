@@ -82,6 +82,8 @@ do_build() {
   docker buildx build \
     --platform linux/arm64 \
     --target lambda-microvm-runner \
+    --provenance=false \
+    --sbom=false \
     -f api/Dockerfile \
     "${tags[@]}" \
     --load \
