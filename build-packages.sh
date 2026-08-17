@@ -210,6 +210,11 @@ install_python_packages() {
         pytesseract \
         pdfminer \
         vsdx \
+        pypdf \
+        pdfplumber \
+        defusedxml \
+        lxml \
+        validators \
         rasterio \
         rioxarray \
         geopandas \

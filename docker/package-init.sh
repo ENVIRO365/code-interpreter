@@ -93,6 +93,7 @@ packages_ready() {
     [ -d "/pkgs/python/${PYTHON_VERSION}/lib/python${PYTHON_SITE_VERSION}/site-packages/chdb" ] &&
     [ -d "/pkgs/python/${PYTHON_VERSION}/lib/python${PYTHON_SITE_VERSION}/site-packages/statsmodels" ] &&
     [ -d "/pkgs/python/${PYTHON_VERSION}/lib/python${PYTHON_SITE_VERSION}/site-packages/rasterio" ] &&
+    [ -d "/pkgs/python/${PYTHON_VERSION}/lib/python${PYTHON_SITE_VERSION}/site-packages/pdfplumber" ] &&
     [ -f "/pkgs/node/${NODE_VERSION}/.package-installed" ] &&
     js_packages_ready "/pkgs/node/${NODE_VERSION}" &&
     [ -f "/pkgs/bun/${BUN_VERSION}/.package-installed" ] &&
@@ -231,6 +232,11 @@ if [ -f "$PIP_PATH" ]; then
         pytesseract \
         pdfminer \
         vsdx \
+        pypdf \
+        pdfplumber \
+        defusedxml \
+        lxml \
+        validators \
         rasterio \
         rioxarray \
         geopandas \
