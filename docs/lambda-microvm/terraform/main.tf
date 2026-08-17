@@ -251,6 +251,17 @@ data "aws_iam_policy_document" "build_perms" {
     }
   }
 
+  # The image build's boot/snapshot executor authenticates to ECR Public to
+  # pull the AWS-managed base layers (public.ecr.aws). Without this the build
+  # dies AFTER docker export with CREATE_FAILED and an empty stateReason -
+  # CloudTrail shows the executor denied ecr-public:GetAuthorizationToken.
+  statement {
+    sid       = "PublicEcrAuth"
+    effect    = "Allow"
+    actions   = ["ecr-public:GetAuthorizationToken", "sts:GetServiceBearerToken"]
+    resources = ["*"]
+  }
+
   dynamic "statement" {
     for_each = var.private_ecr ? [1] : []
     content {
