@@ -15,6 +15,8 @@ Code Interpreter (internally `codeapi`, the prefix used by its env vars, images,
 - **Package Delivery** - Bakes Python, Node, and Bun into the default microVM
   block-root image; a package-init PVC mode remains available for direct NsJail
   development
+- **Remote Code Bridge** - Lets an operator-owned VM connect outbound and serve
+  as a fenced, stateful sandbox through the `@librechat/code` worker
 
 ## Architecture
 
@@ -35,7 +37,9 @@ Set `CODEAPI_EXECUTION_PROFILE` consistently on an API deployment and its
 workers. The default profile keeps the existing `python-queue` and
 `other-queue`; the stateful profile uses `stateful-python-queue` and
 `stateful-other-queue`. This allows both deployments to share Redis without
-cross-consuming jobs.
+cross-consuming jobs. The `remote-bridge` backend additionally uses
+`remote-bridge-python-queue` and `remote-bridge-other-queue`, fencing attached
+worker jobs from Lambda consumers during rolling deployments.
 
 An existing Lambda MicroVM deployment upgraded from a pre-profile release may
 leave `CODEAPI_EXECUTION_PROFILE` unset for its first binary rollout. An
@@ -65,6 +69,18 @@ Two modes are supported:
 - **NsJail mode** (`kvmEnabled: false`): Direct NsJail sandboxing with Linux namespaces and cgroups
 - **MicroVM mode** (`kvmEnabled: true`): libkrun microVM with its own kernel, NsJail runs inside the guest
 
+## Remote stateful environments
+
+The `remote-bridge` backend keeps the Code API as the policy and queue boundary
+while moving execution to a sandbox on an operator-selected VM. The worker only
+makes outbound authenticated requests, so the VM does not need a public ingress
+port. Assignments carry a deadline, a single-active-worker lock, a monotonically
+increasing generation, and a one-time lease token to fence stale workers.
+
+See [Remote Code Bridge](docs/remote-bridge/README.md) for deployment and threat
+model details. The worker protocol and CLI live in the provider-neutral
+[`@librechat/code`](packages/code/README.md) package.
+
 ## Security disclaimer
 
 This service exists to run arbitrary, untrusted code — treat every
@@ -86,7 +102,38 @@ privilege, keep hosts patched, and deploy responsibly. If you believe you
 have found a vulnerability, please report it privately rather than opening a
 public issue (see [CONTRIBUTING](CONTRIBUTING.md)).
 
+## Releases
+
+Deployments should pin a [tagged release](https://github.com/LibreChat-AI/code-interpreter/releases)
+rather than track `main`, which moves whenever an internal snapshot is merged:
+
+```bash
+git clone --branch v1.0.0 --depth 1 https://github.com/LibreChat-AI/code-interpreter.git
+```
+
+Every release attaches `codeapi-<chart version>.tgz`, the packaged Helm chart
+with its Redis and MinIO subcharts vendored:
+
+```bash
+helm install codeapi ./codeapi-0.3.1.tgz -f my-values.yaml
+```
+
+Versions are `vMAJOR.MINOR.PATCH`, with `-rcN` release candidates published as
+pre-releases. See [docs/RELEASING.md](docs/RELEASING.md) for how releases are
+cut.
+
 ## Local Development
+
+Copy `.env.example` to `.env` and set `CODEAPI_BRIDGE_TOKEN` to a private value
+of at least 32 bytes (generate one with `openssl rand -hex 32`). The API exposes
+bridge routes when configured through the remote-bridge backend, paired auth,
+dynamic workers, or a bridge token. Hardened deployments with none of these
+configured leave bridge routes disabled and do not require a bridge token.
+Enabled bridges still require this enrollment credential. Compose defaults to
+`CODEAPI_BRIDGE_AUTH_MODE=paired` and `CODEAPI_BRIDGE_DYNAMIC_WORKERS=true`.
+To restrict pairing to a fixed worker, set `CODEAPI_BRIDGE_DYNAMIC_WORKERS=false`
+and `CODEAPI_BRIDGE_WORKER_ID` to its ID. Keep the token outside workspaces and
+model-visible configuration.
 
 ```bash
 docker-compose up --build
@@ -97,6 +144,32 @@ The default KVM Compose path builds `sandbox-runner-baked`: the guest root and
 virtio-fs mount. The first image build takes longer because it compiles the
 language runtimes, but package-heavy workloads do not accumulate host file
 descriptors in the launcher.
+
+KVM guests use the runner container's `/etc/resolv.conf`, including Docker's
+embedded resolver or Kubernetes nameservers and search domains. The launcher
+preserves service hostnames instead of pinning their startup IP addresses.
+Both baked and directory rootfs images contain a resolver symlink whose target
+is populated by a guest wrapper in private `/run` runtime storage before any
+`LAUNCHER_EXEC` executable starts; the
+read-only root disk does not need modification at boot. Rebuild the runner
+image to pick up this layout change. A missing resolver handoff fails startup
+rather than leaving the guest with an unrelated public DNS server.
+
+libkrun delivers the guest environment on the kernel command line, which only
+carries single-line printable ASCII and is capped at 2048 bytes by the guest
+kernel. The launcher entrypoint therefore forwards only the `nameserver`,
+`search`, `domain`, `options` and `sortlist` directives, joined by `|`, and the
+guest wrapper expands them back into `/etc/resolv.conf` lines. The launcher
+rejects any forwarded variable that would not survive that trip (control
+characters, non-ASCII bytes, quoting the kernel would split, or an oversized
+environment) with a named error instead of a libkrun panic and restart loop.
+
+To validate a deployment, execute code that creates a file in `/mnt/data`,
+confirm the response includes its file reference, and download it. Recreate the
+egress gateway with a different container IP while leaving the runner alive,
+then repeat after DNS caches expire. The file must still upload and download;
+`artifact_delivery` must not report a failure. `tests/kvm_guest_dns.sh` checks
+the resolver handoff and rootfs assembly without requiring KVM.
 
 Setting `KVM_ENABLED=false` still selects the directory-root target and the
 host package mount automatically for direct NsJail development.

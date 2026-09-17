@@ -1,4 +1,4 @@
-# Standalone CI for the public ClickHouse/code-interpreter repo, which is
+# Standalone CI for the public LibreChat-AI/code-interpreter repo, which is
 # published from services/codeapi as snapshot commits (see
 # .github/workflows/publish-codeapi.yml in the monorepo). This file is
 # inert inside the monorepo — GitHub only runs workflows from the repo
@@ -31,13 +31,43 @@ jobs:
       - name: Block-root package delivery
         run: tests/block_root_package_delivery.sh
 
+      - name: KVM guest resolver handoff
+        run: tests/kvm_guest_dns.sh
+
       - name: Sandbox-runner liveness checks
         run: tests/sandbox_runner_healthcheck.sh
+
+      - name: Bridge pairing rollout safety
+        run: tests/bridge_pairing_rollout.sh
+
+      - name: Compose bridge configuration
+        run: node tests/compose-bridge-config.cjs
+
+      - name: Release versioning
+        run: tests/release-versioning.sh
 
       - name: Validate sandbox Dockerfiles
         run: |
           docker buildx build --check -f api/Dockerfile .
           docker buildx build --check -f docker/Dockerfile.worker-sandbox .
+
+  launcher-unit-tests:
+    name: Launcher Unit Tests
+    runs-on: ubuntu-latest
+    container: fedora:43
+    defaults:
+      run:
+        working-directory: launcher
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: Install Rust and libkrun
+        # Mirrors launcher/Dockerfile's builder stage; libkrun is only packaged
+        # for Fedora, and the guest-environment checks link against it.
+        run: dnf install -y --setopt=install_weak_deps=False rust cargo libkrun-devel gcc
+
+      - name: Cargo tests
+        run: cargo test
 
   api-unit-tests:
     name: API Unit Tests
@@ -112,11 +142,81 @@ jobs:
       - name: Install dependencies
         run: bun ci
 
+      - name: Install Redis for ledger integration tests
+        run: sudo apt-get update && sudo apt-get install -y redis-server
+
+      - name: Verify fleet admission with isolated Redis
+        run: |
+          redis_socket="$RUNNER_TEMP/byom-admission.sock"
+          redis-server --port 0 --unixsocket "$redis_socket" --save '' --appendonly no --daemonize yes
+          trap 'redis-cli -s "$redis_socket" shutdown nosave' EXIT
+          BRIDGE_TEST_REDIS_URL="$redis_socket" bun test src/bridge/fleet.test.ts
+
       - name: Build service
         run: bun run build
 
       - name: Bun tests
         run: bun run test
+
+  code-package-tests:
+    name: Code Package Tests (Node ${{ matrix.node-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: ['20.11.0', '22.21.0', '24.16.0']
+    defaults:
+      run:
+        working-directory: packages/code
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+          cache-dependency-path: packages/code/package-lock.json
+
+      - name: Install ripgrep
+        # list_files and search_text shell out to rg. Without it the workspace
+        # tools degrade to LIST_UNAVAILABLE / SEARCH_UNAVAILABLE and 37 tests
+        # fail, so the dependency is part of the job, not an assumption.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ripgrep
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Tests
+        run: npm test
+
+  macos-storage-tests:
+    name: macOS Storage ACL Tests
+    runs-on: macos-14
+    defaults:
+      run:
+        working-directory: packages/code
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24.16.0
+      - run: npm ci
+      - run: npm run build
+      - name: Selected project root containment tests
+        run: |
+          command -v rg || brew install ripgrep
+          node --test dist/root-access.test.js
+          node --test --test-name-pattern='selected command|selected replay copy|programmatic probes reject' dist/native-sandbox.test.js
+      - name: Native environment containment tests
+        run: node --test dist/environment.test.js
+      - name: Native ACL and credential lifecycle tests
+        run: node --test dist/macos-storage.test.js dist/private-storage.test.js dist/storage.test.js dist/github.test.js
+      - name: Native environment setup lifecycle tests
+        env:
+          LIBRECHAT_CODE_LIVE_SRT_TESTS: '1'
+        run: node --test dist/environment-live.test.js
 
   lambda-microvm-provisioning:
     name: Lambda MicroVM Provisioning
@@ -155,12 +255,17 @@ jobs:
           shellcheck scripts/build-lambda-microvm-artifact.sh
 
       - name: Validate runner Dockerfile
-        run: >-
-          docker buildx build --check
-          --platform linux/arm64
-          --target lambda-microvm-runner
-          -f api/Dockerfile
-          .
+        run: |
+          docker buildx build --check \
+            --platform linux/arm64 \
+            --target lambda-microvm-runner \
+            -f api/Dockerfile \
+            .
+          docker buildx build --check \
+            --platform linux/arm64 \
+            --target lambda-microvm-app-host \
+            -f api/Dockerfile \
+            .
 
       - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
         with:
@@ -173,6 +278,7 @@ jobs:
           terraform fmt -check -recursive
           terraform init -backend=false -input=false -lockfile=readonly
           terraform validate
+          terraform test
 
   lambda-microvm-runner-build:
     name: Lambda MicroVM Runner Image (arm64)

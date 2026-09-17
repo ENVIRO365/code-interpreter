@@ -18,8 +18,44 @@ type SandboxResponseLike = {
   language?: unknown;
   version?: unknown;
   files?: unknown;
+  artifact_delivery?: unknown;
+  artifact_truncation?: unknown;
   run?: RunLike;
 };
+
+function summarizeArtifactDelivery(value: unknown): Record<string, unknown> | undefined {
+  if (value == null || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const delivery = value as {
+    code?: unknown;
+    status?: unknown;
+    attempted?: unknown;
+    delivered?: unknown;
+    failed?: unknown;
+  };
+  return {
+    code: delivery.code,
+    status: delivery.status,
+    attempted: delivery.attempted,
+    delivered: delivery.delivered,
+    failed: delivery.failed,
+  };
+}
+
+function summarizeArtifactTruncation(value: unknown): Record<string, unknown> | undefined {
+  if (value == null || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const truncation = value as {
+    code?: unknown;
+    reasons?: unknown;
+    skipped?: unknown;
+    skipped_count?: unknown;
+  };
+  return {
+    code: truncation.code,
+    reasons: truncation.reasons,
+    skipped_count: truncation.skipped_count,
+    reported_paths: Array.isArray(truncation.skipped) ? truncation.skipped.length : undefined,
+  };
+}
 
 export function summarizeText(value: unknown): { length: number; present: boolean } {
   if (typeof value !== 'string') {
@@ -67,6 +103,8 @@ export function summarizeSandboxResponse(data: SandboxResponseLike): Record<stri
     language: data.language,
     version: data.version,
     files: summarizeFiles(data.files),
+    artifact_delivery: summarizeArtifactDelivery(data.artifact_delivery),
+    artifact_truncation: summarizeArtifactTruncation(data.artifact_truncation),
     run: run == null
       ? undefined
       : {
@@ -83,4 +121,3 @@ export function summarizeSandboxResponse(data: SandboxResponseLike): Record<stri
       },
   };
 }
-

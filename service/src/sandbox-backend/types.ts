@@ -37,6 +37,18 @@ export interface SandboxExecuteContext {
   deadlineAtMs?: number;
   tenantId?: string;
   canonicalUserId?: string;
+  /** Trusted API-selected outbound worker. Presence requires a tenant-bound credential. */
+  bridgeWorkerId?: string;
+  /** Trusted selected workspace for native replay-mode PTC. */
+  workspaceId?: string;
+  /** Stable identifier for this queued iteration, used to derive an idempotent
+   * stateless launch token. PTC replay reuses one executionId across every
+   * iteration, so the executionId alone cannot separate them; the request body
+   * can, but it is rebuilt with a fresh egress grant and manifest on every job
+   * attempt, so hashing it would break RunMicrovm idempotency when BullMQ
+   * reprocesses a stalled job. The queued job id is distinct per iteration and
+   * stable across attempts of the same job. */
+  queuedJobId?: string;
   /** Absent ⇒ stateless execution (no runtime session affinity). */
   runtimeSessionId?: string;
   runtimeSessionMode: t.RuntimeSessionMode;
@@ -53,23 +65,37 @@ export type SandboxRawResponse = t.ExecuteResponse & {
   session_id: string;
   files?: t.FileRefs;
   run?: t.ExecuteResponse['run'];
+  pending_tool_calls_payload?: string;
 };
 
 export interface SandboxBackend {
-  readonly name: 'http' | 'lambda-microvm';
+  readonly name: 'http' | 'lambda-microvm' | 'remote-bridge';
   execute(req: SandboxTransportRequest, ctx: SandboxExecuteContext): Promise<SandboxRawResponse>;
   shutdown?(): Promise<void>;
 }
 
 export type SandboxBackendErrorCode =
   | 'RUNTIME_SESSION_BUSY'
+  | 'BRIDGE_WORKER_OFFLINE'
+  | 'BRIDGE_WORKER_UNAUTHORIZED'
+  | 'BRIDGE_WORKER_BUSY'
+  | 'BRIDGE_EXECUTION_FAILED'
+  | 'BRIDGE_DEADLINE_EXCEEDED'
+  | 'BRIDGE_ASSIGNMENT_FENCED'
+  | 'BRIDGE_ASSIGNMENT_NOT_FOUND'
+  | 'BRIDGE_WORKER_FENCED'
+  | 'BRIDGE_WORKER_QUARANTINED'
+  | 'BRIDGE_WORKSPACE_QUARANTINED'
+  | 'BRIDGE_WORKER_MISMATCH'
+  | 'BRIDGE_ASSIGNMENT_INVALID'
+  | 'BRIDGE_RESULT_INVALID'
   | 'MICROVM_LAUNCH_FAILED'
   | 'MICROVM_LAUNCH_THROTTLED'
   | 'MICROVM_UNHEALTHY'
   | 'MICROVM_FENCED'
   | 'MICROVM_DEADLINE_EXCEEDED';
 
-/** Lambda-only failure modes; the worker prefixes messages with the code so
+/** Typed sandbox backend failure modes; the worker prefixes messages with the code so
  *  the router can map them (e.g. RUNTIME_SESSION_BUSY -> 409). Axios errors
  *  from the sandbox POST itself are rethrown raw by every backend. */
 export class SandboxBackendError extends Error {

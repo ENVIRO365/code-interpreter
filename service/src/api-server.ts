@@ -18,6 +18,9 @@ import { requestErrorLogger, requestNotFoundLogger } from './middleware/request-
 import { localAuth } from './auth/local';
 import serviceRouter from './service/router';
 import programmaticRouter from './service/programmatic-router';
+import bridgeRouter from './bridge';
+import workspaceToolsRouter from './workspace-tools';
+import { workspaceToolOutcomeLogging } from './workspace-tools/outcome';
 import { connection } from './queue';
 import { metricsHandler } from './metrics';
 import { httpMetricsMiddleware } from './middleware/httpMetrics';
@@ -25,15 +28,19 @@ import { executionProfileMiddleware } from './middleware/execution-profile';
 import { traceHttpRequest } from './telemetry';
 import { env } from './config';
 import logger from './logger';
+import hostedAppRouter from './hosted-app/router';
+import { hostedAppPreviewGateway } from './hosted-app/preview-gateway';
 
 const { LOCAL_MODE: isLocalMode } = env;
 
 const app = express();
+app.post('/v1/workspace-tools/execute', workspaceToolOutcomeLogging);
 app.disable('x-powered-by');
 app.set('trust proxy', 1);
 app.use(traceHttpRequest('codeapi.api.request'));
 app.use(httpMetricsMiddleware);
 app.use(executionProfileMiddleware);
+app.use(hostedAppPreviewGateway);
 
 const v1 = Router();
 
@@ -51,8 +58,11 @@ app.get('/v1/health', async (_, res) => {
   }
 });
 
+v1.use('/bridge', bridgeRouter);
 v1.use(isLocalMode ? localAuth : apiKeyAuth);
 
+v1.use(workspaceToolsRouter);
+v1.use('/hosted-apps', hostedAppRouter);
 v1.use(serviceRouter);
 v1.use(programmaticRouter);
 

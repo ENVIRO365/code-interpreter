@@ -1,5 +1,5 @@
 # File Server Dockerfile
-FROM oven/bun:1.3.14 AS base
+FROM oven/bun:1.4.2 AS base
 WORKDIR /app
 
 # Install dependencies
@@ -16,15 +16,18 @@ RUN cd /temp/prod && bun install --frozen-lockfile --production
 FROM base AS builder
 COPY --from=install /temp/dev/node_modules node_modules
 COPY service/src ./src
+COPY service/scripts ./scripts
 COPY shared /shared
+COPY packages/code/src /packages/code/src
 COPY service/tsconfig.json ./
 RUN bun build ./src/file-server.ts --minify --outdir .build --target bun --external '@opentelemetry/*'
 RUN bun build ./src/api-server.ts --minify --outdir .build-api --target bun --external '@opentelemetry/*'
+RUN bun build ./scripts/rehydrate-session-cache.ts --minify --outdir .build-migrations --target bun --external '@opentelemetry/*'
 RUN bun build ./src/worker-server.ts --minify --outdir .build-worker --target bun --external '@opentelemetry/*'
 RUN bun build ./src/egress-gateway.ts --minify --outdir .build-egress-gateway --target bun --external '@opentelemetry/*'
 
 # File server production
-FROM oven/bun:1.3.14 AS production
+FROM oven/bun:1.4.2 AS production
 ENV NODE_ENV=production
 WORKDIR /app
 COPY --from=install /temp/prod/node_modules ./node_modules
@@ -32,16 +35,17 @@ COPY --from=builder /app/.build ./.build
 CMD ["bun", "run", ".build/file-server.js"]
 
 # API server (HTTP on port 3112)
-FROM oven/bun:1.3.14 AS api
+FROM oven/bun:1.4.2 AS api
 ENV NODE_ENV=production
 WORKDIR /app
 COPY --from=install /temp/prod/node_modules ./node_modules
 COPY --from=builder /app/.build-api ./.build-api
+COPY --from=builder /app/.build-migrations ./.build-migrations
 COPY --from=builder /app/src/*.py ./src/
 CMD ["bun", "run", ".build-api/api-server.js"]
 
 # Worker server (job processor, health on port 3113)
-FROM oven/bun:1.3.14 AS worker
+FROM oven/bun:1.4.2 AS worker
 ENV NODE_ENV=production
 WORKDIR /app
 COPY --from=install /temp/prod/node_modules ./node_modules
@@ -50,7 +54,7 @@ COPY --from=builder /app/src/*.py ./src/
 CMD ["bun", "run", ".build-worker/worker-server.js"]
 
 # Egress gateway (sandbox outbound delegation)
-FROM oven/bun:1.3.14 AS egress-gateway
+FROM oven/bun:1.4.2 AS egress-gateway
 ENV NODE_ENV=production
 WORKDIR /app
 COPY --from=install /temp/prod/node_modules ./node_modules
@@ -63,6 +67,7 @@ ENV NODE_ENV=development
 COPY --from=install /temp/dev/node_modules node_modules
 COPY service/src ./src
 COPY shared /shared
+COPY packages/code/src /packages/code/src
 COPY service/tsconfig.json ./
 EXPOSE 3000 9230
 CMD ["bun", "run", "--watch", "src/file-server.ts"]

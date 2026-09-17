@@ -46,6 +46,11 @@ egressGrant:
   ttlSeconds: 900
   ledgerRequired: true
   ledgerTtlGraceSeconds: 300
+  # Enable only after all gateway replicas support compact ledgers.
+  ledgerCompact: false
+  inputManifestMaxFiles: 512
+  inputManifestConcurrency: 8
+  inputManifestTimeoutMs: 10000
 
 # Worker signs sandbox execute requests with this private key; sandbox-runner
 # receives only the public verifier so a runner compromise cannot mint new
@@ -68,10 +73,20 @@ api:
   enabled: true
   replicaCount: 2  # Start with 2 API pods
 
+  # Pairing revocation relies on every serving replica honoring the Redis
+  # generation fence. Recreate prevents a pre-fence binary from redeeming an
+  # already-revoked code during the first rollout of paired bridge workers.
+  # Roll back to pre-fence revisions only with scripts/safe-pairing-rollback.sh.
+  strategy:
+    type: Recreate
+    rollingUpdate: null
+
   image:
     repository: codeapi-api
     tag: latest
-    pullPolicy: IfNotPresent  # Use Always in production
+    # Recreate is a security fence only if replacement pods cannot reuse a
+    # cached pre-fence image behind the mutable default tag.
+    pullPolicy: Always
 
   # Resource limits
   resources:
@@ -258,6 +273,10 @@ workerSandbox:
     # Defaults to maxConcurrentJobs when unset.
     jobUidCount: null
     workspaceReaperMaxAgeSeconds: 3600
+    httpInputCacheEnabled: true
+    httpInputCacheMaxInflight: 16
+    httpInputCacheMaxObjects: 4096
+    inputCacheMaxBytes: 536870912
 
   # Language runtime package delivery
   packages:
@@ -317,6 +336,8 @@ workerSandbox:
 # FILE SERVER (S3/MinIO integration, stateless)
 # =============================================================================
 fileServer:
+  objectIndexEnabled: false
+  metadataConcurrency: 1
   enabled: true
   replicaCount: 1
 

@@ -95,10 +95,17 @@ export function jobDeadlineAtMs(
   enqueuedAtMs: number | undefined,
   timeoutMs: number,
   nowMs: number = Date.now(),
+  producerDeadlineAtMs?: number,
 ): number {
-  return Number.isFinite(enqueuedAtMs) && (enqueuedAtMs as number) > 0
+  const localDeadline = Number.isFinite(enqueuedAtMs) && (enqueuedAtMs as number) > 0
     ? (enqueuedAtMs as number) + timeoutMs
     : nowMs + timeoutMs;
+  if (producerDeadlineAtMs === undefined) return localDeadline;
+  // A worker with a larger JOB_TIMEOUT must not outlive the admission fence
+  // retained by its API producer. Malformed explicit deadlines fail closed.
+  return Number.isFinite(producerDeadlineAtMs)
+    ? Math.min(localDeadline, producerDeadlineAtMs)
+    : 0;
 }
 
 /** The worker stops user work at JOB_TIMEOUT, then may still need to terminate
@@ -210,6 +217,17 @@ export function lambdaMicrovmNumericConfigError(
   return undefined;
 }
 
+export function resolvePositiveIntEnv(raw: string | undefined, defaultValue: number): number {
+  if (raw == null || raw.trim() === '') {
+    return defaultValue;
+  }
+  const parsed = Math.floor(Number(raw));
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+    return defaultValue;
+  }
+  return parsed;
+}
+
 export function resolveEgressGrantTtlSeconds(rawTtlSeconds: string | undefined, jobTimeoutMs: number): number {
   const defaultTtlSeconds = Math.max(1, Math.ceil((jobTimeoutMs + EGRESS_GRANT_GRACE_MS) / 1000));
   if (rawTtlSeconds == null || rawTtlSeconds.trim() === '') {
@@ -225,6 +243,12 @@ export function resolveEgressGrantTtlSeconds(rawTtlSeconds: string | undefined, 
 }
 
 const lambdaMicrovmNumericConfig = resolveLambdaMicrovmNumericConfig(process.env);
+
+export function hostedAppOperationTimeoutMs(): number {
+  return env.CHECKPOINT_TIMEOUT_MS * 9
+    + env.LAMBDA_MICROVM_LAUNCH_TIMEOUT_MS * 7
+    + env.HOSTED_APP_START_TIMEOUT_MS + 30_000;
+}
 
 function configuredNumber(raw: string | undefined, fallback: number): number {
   return raw == null || raw.trim() === '' ? fallback : Number(raw);
@@ -243,12 +267,12 @@ function configuredChoice<T extends string>(
 
 export function resolveSandboxBackend(
   raw: string | undefined,
-): 'http' | 'lambda-microvm' {
+): 'http' | 'lambda-microvm' | 'remote-bridge' {
   return configuredChoice(
     raw,
     'CODEAPI_SANDBOX_BACKEND',
     'http',
-    ['http', 'lambda-microvm'],
+    ['http', 'lambda-microvm', 'remote-bridge'],
   );
 }
 
@@ -263,8 +287,20 @@ export function resolveRuntimeSessionMode(
   );
 }
 
+export function resolveBridgeAuthMode(
+  raw: string | undefined,
+): 'static' | 'paired' {
+  return configuredChoice(
+    raw,
+    'CODEAPI_BRIDGE_AUTH_MODE',
+    'static',
+    ['static', 'paired'],
+  );
+}
+
 const sandboxBackend = resolveSandboxBackend(process.env.CODEAPI_SANDBOX_BACKEND);
 const runtimeSessionMode = resolveRuntimeSessionMode(process.env.CODEAPI_RUNTIME_SESSION_MODE);
+const bridgeAuthMode = resolveBridgeAuthMode(process.env.CODEAPI_BRIDGE_AUTH_MODE);
 
 export const env = {
   PORT: process.env.SERVICE_PORT ?? 3112,
@@ -280,12 +316,21 @@ export const env = {
   EGRESS_GATEWAY_FILE_SERVER_URL: process.env.EGRESS_GATEWAY_FILE_SERVER_URL ?? process.env.FILE_SERVER_URL ?? 'http://localhost:3000',
   EGRESS_GATEWAY_TOOL_CALL_SERVER_URL: process.env.EGRESS_GATEWAY_TOOL_CALL_SERVER_URL ?? process.env.TOOL_CALL_SERVER_URL ?? 'http://localhost:3033',
   EGRESS_GATEWAY_MAX_TOOL_CALL_BYTES: Number(process.env.EGRESS_GATEWAY_MAX_TOOL_CALL_BYTES) || 1024 * 1024,
+  // Per-entry / aggregate caps for PTC tool results persisted in `tool_history:` (see replay-state.ts).
+  PTC_MAX_TOOL_RESULT_BYTES: resolvePositiveIntEnv(process.env.PTC_MAX_TOOL_RESULT_BYTES, 5_000_000),
+  PTC_MAX_TOOL_HISTORY_TOTAL_BYTES: resolvePositiveIntEnv(process.env.PTC_MAX_TOOL_HISTORY_TOTAL_BYTES, 40_000_000),
   EGRESS_GATEWAY_MAX_FILE_BYTES: Number(process.env.EGRESS_GATEWAY_MAX_FILE_BYTES ?? process.env.SANDBOX_MAX_FILE_SIZE) || 10_000_000,
   EGRESS_GATEWAY_MAX_PATH_LENGTH: Number(process.env.EGRESS_GATEWAY_MAX_PATH_LENGTH ?? process.env.SANDBOX_MAX_PATH_LENGTH) || 256,
   EGRESS_GATEWAY_MAX_NESTING_DEPTH: Number(process.env.EGRESS_GATEWAY_MAX_NESTING_DEPTH ?? process.env.SANDBOX_MAX_NESTING_DEPTH) || 10,
   EGRESS_GATEWAY_REQUEST_TIMEOUT_MS: Number(process.env.EGRESS_GATEWAY_REQUEST_TIMEOUT_MS) || 30_000,
   EGRESS_GATEWAY_REVOKE_TIMEOUT_MS: Number(process.env.EGRESS_GATEWAY_REVOKE_TIMEOUT_MS) || 5_000,
   EGRESS_LEDGER_REQUIRED: process.env.CODEAPI_EGRESS_LEDGER_REQUIRED === 'true' || process.env.CODEAPI_HARDENED_SANDBOX_MODE === 'true',
+  FILE_METADATA_CONCURRENCY: Math.min(64, Math.max(1, Math.floor(Number(process.env.CODEAPI_FILE_METADATA_CONCURRENCY) || 1))),
+  FILE_OBJECT_INDEX_ENABLED: process.env.CODEAPI_FILE_OBJECT_INDEX_ENABLED === 'true',
+  INPUT_MANIFEST_MAX_FILES: Math.min(512, Math.max(1, Math.floor(Number(process.env.CODEAPI_INPUT_MANIFEST_MAX_FILES) || 512))),
+  INPUT_MANIFEST_CONCURRENCY: Math.min(64, Math.max(1, Math.floor(Number(process.env.CODEAPI_INPUT_MANIFEST_CONCURRENCY) || 8))),
+  INPUT_MANIFEST_TIMEOUT_MS: Math.max(1, Math.floor(Number(process.env.CODEAPI_INPUT_MANIFEST_TIMEOUT_MS) || 10000)),
+  EGRESS_LEDGER_COMPACT: process.env.CODEAPI_EGRESS_LEDGER_COMPACT === 'true',
   EGRESS_LEDGER_TTL_GRACE_SECONDS: Number(process.env.CODEAPI_EGRESS_LEDGER_TTL_GRACE_SECONDS) || 300,
   EGRESS_GRANT_SECRET: process.env.CODEAPI_EGRESS_GRANT_SECRET ?? '',
   EGRESS_GRANT_TTL_SECONDS: resolveEgressGrantTtlSeconds(process.env.EGRESS_GRANT_TTL_SECONDS, defaultJobTimeoutMs),
@@ -308,8 +353,24 @@ export const env = {
   // Files List Rate Limits
   FETCH_LIMIT_WINDOW: Number(process.env.FETCH_LIMIT_WINDOW) || 60 * 1000, // 1 minute
   FETCH_MAX_REQUESTS: Number(process.env.FETCH_MAX_REQUESTS) || 120, // 120 requests per minute
+  // File Delete Rate Limits. Fall back to the fetch settings so existing
+  // deployments keep their current limits while using an independent bucket.
+  DELETE_LIMIT_WINDOW:
+    Number(process.env.DELETE_LIMIT_WINDOW) || Number(process.env.FETCH_LIMIT_WINDOW) || 60 * 1000,
+  DELETE_MAX_REQUESTS:
+    Number(process.env.DELETE_MAX_REQUESTS) || Number(process.env.FETCH_MAX_REQUESTS) || 120,
   // Redis Key Cache Config
   SESSION_CACHE_TTL: Number(process.env.SESSION_CACHE_TTL) || 86400,
+  /** TTL for the durable `session-owner:<session_id>` record that backs
+   *  deletion after `SESSION_CACHE_TTL` has lapsed (see
+   *  `session-ownership.ts`). Sized to outlive a client's retention
+   *  window — LibreChat sweeps expired files at 30 days by default, and a
+   *  shorter value here reinstates the leak it exists to close. Clamped
+   *  so it can never be tighter than the cache TTL. */
+  SESSION_OWNER_TTL: Math.max(
+    Number(process.env.SESSION_OWNER_TTL) || 90 * 86400,
+    Number(process.env.SESSION_CACHE_TTL) || 86400,
+  ),
   /** Strict tenant isolation. When true, sessionKey resolution fails closed
    *  (500) on requests whose auth context lacks `tenantId`, instead of
    *  silently falling back to the `'legacy'` tenant prefix. Default OFF in
@@ -350,8 +411,21 @@ export const env = {
    * - `http` (default): POST signed execute requests to SANDBOX_ENDPOINT
    *   (current Kubernetes/libkrun sandbox-runner).
    * - `lambda-microvm`: AWS Lambda MicroVM backend.
+   * - `remote-bridge`: dispatch to an outbound-connected @librechat/code worker.
    */
   SANDBOX_BACKEND: sandboxBackend,
+  /** Permit trusted callers to route each execution to a paired worker ID. */
+  BRIDGE_DYNAMIC_WORKERS: process.env.CODEAPI_BRIDGE_DYNAMIC_WORKERS === 'true',
+  /** Opt-in independent native workspace concurrency; serial by default. */
+  BRIDGE_MAX_WORKSPACE_LEASE_SLOTS: Number(
+    process.env.CODEAPI_BRIDGE_MAX_WORKSPACE_LEASE_SLOTS ?? 1,
+  ),
+  /** Outbound worker selected by the remote-bridge backend. */
+  BRIDGE_WORKER_ID: process.env.CODEAPI_BRIDGE_WORKER_ID ?? '',
+  /** Static compatibility auth or short-lived proof-of-possession credentials. */
+  BRIDGE_AUTH_MODE: bridgeAuthMode,
+  /** Enrollment and lease credential shared only with the configured worker. */
+  BRIDGE_TOKEN: process.env.CODEAPI_BRIDGE_TOKEN ?? '',
   /**
    * Runtime session affinity for stateful sandbox backends.
    * - `stateless` (default): no runtime sessions; `runtime_session_hint` ignored.
@@ -403,6 +477,34 @@ export const env = {
   ),
   CHECKPOINT_TIMEOUT_MS: configuredNumber(process.env.CODEAPI_CHECKPOINT_TIMEOUT_MS, 60_000),
   CHECKPOINT_PREFIX: process.env.CODEAPI_CHECKPOINT_PREFIX ?? 'rtsx-checkpoints/',
+  /** Dedicated Lambda MicroVM resident-server fleet. This remains an explicit
+   * stateful-stack capability; the ordinary/default HTTP profile never starts
+   * or preserves application processes. */
+  HOSTED_APPS_ENABLED: process.env.CODEAPI_HOSTED_APPS_ENABLED === 'true',
+  HOSTED_APP_IMAGE_ARN: process.env.LAMBDA_MICROVM_APP_IMAGE_ARN ?? '',
+  HOSTED_APP_IMAGE_VERSION: process.env.LAMBDA_MICROVM_APP_IMAGE_VERSION || undefined,
+  /* These values are part of the pinned app-host image contract. RunMicrovm
+   * cannot inject environment variables into the image, so exposing overrides
+   * here would only make the control plane call ports the runner never opened. */
+  HOSTED_APP_CONTROL_PORT: 8080 as number,
+  HOSTED_APP_PREVIEW_PORT: 3000 as number,
+  HOSTED_APP_MAX_DURATION_SECONDS: configuredNumber(
+    process.env.LAMBDA_MICROVM_APP_MAX_DURATION_SECONDS,
+    28_800,
+  ),
+  HOSTED_APP_IDLE_SECONDS: configuredNumber(
+    process.env.LAMBDA_MICROVM_APP_IDLE_SECONDS,
+    300,
+  ),
+  HOSTED_APP_SUSPEND_SECONDS: configuredNumber(
+    process.env.LAMBDA_MICROVM_APP_SUSPEND_SECONDS,
+    900,
+  ),
+  HOSTED_APP_START_TIMEOUT_MS: 30_000 as number,
+  HOSTED_APP_CREDENTIAL_KEY: process.env.CODEAPI_HOSTED_APP_CREDENTIAL_KEY ?? '',
+  HOSTED_APP_PREVIEW_ORIGIN: process.env.CODEAPI_HOSTED_APP_PREVIEW_ORIGIN ?? '',
+  HOSTED_APP_PREVIEW_SIGNING_KEY:
+    process.env.CODEAPI_HOSTED_APP_PREVIEW_SIGNING_KEY ?? '',
 };
 
 const default_run_memory_limit = 256 * 1024 * 1024;

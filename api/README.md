@@ -94,6 +94,24 @@ Other package-format-compatible runtimes (Go, Rust, Java, GCC) can be installed 
 
 Execute code in a sandboxed environment.
 
+When a persisted input file is removed during execution, a complete artifact
+scan reports its relative path in `deleted_files`. Callers can use this
+explicit list to remove stale file references from their next session request.
+The field is omitted when no persisted inputs were removed or when artifact
+scanning is incomplete, so truncation or unreadable paths cannot be mistaken
+for deletions.
+
+When supported output files are omitted because the response reaches its file
+count limit, nesting or path limits, file-size limit, or a filesystem entry
+cannot be read, the response includes `artifact_truncation`. Its `reasons`
+object counts detected omissions by cause, `skipped_count` reports the total
+detected omissions, and `skipped` contains up to 20 relative paths so callers
+can match an expected output. Intentional filters such as unsupported file
+extensions, hidden runtime directories, and unchanged session files do not
+produce this marker when they can be classified within the bounded scan. A
+depth-capped subtree that exceeds the metadata probe budget is reported
+conservatively rather than allowing post-execution traversal to run unbounded.
+
 ### `GET /api/v2/runtimes`
 
 List available language runtimes.
@@ -109,3 +127,15 @@ curl -s http://localhost:2000/api/v2/execute \
   -H 'Content-Type: application/json' \
   -d '{"language":"python","version":"3.14.4","files":[{"content":"print(42)"}]}' | jq
 ```
+
+### Requested runtime caps
+
+`POST /api/v2/execute` treats `run_timeout` as an upper bound in milliseconds.
+A request above the effective runtime limit is clamped to that limit, including
+language and package overrides. Smaller caps are preserved, and omission uses
+the runtime default. Compile, CPU, and memory constraints retain their existing
+validation behavior.
+
+Roll out this sandbox behavior before enabling timeout forwarding in the
+service's plain `/exec` handler. Older sandboxes reject caps above their local
+runtime limit; older services remain compatible with updated sandboxes.

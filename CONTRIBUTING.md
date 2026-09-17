@@ -7,7 +7,7 @@ Thanks for your interest in Code Interpreter!
 This repository is published from an internal ClickHouse monorepo, which is
 the source of truth. Internal changes that are not already public are mirrored
 here as a snapshot commit on the `sync/main` branch (spot them by the
-`Source: ClickHouse/ai@<sha>` trailer); a maintainer merges the resulting sync
+`Source: ClickHouse/ai@<sha>` trailer); a maintainer merges the resulting sync <!-- leak-check:allow -->
 pull request to release it to `main`.
 
 Practical consequences:
@@ -21,6 +21,16 @@ Practical consequences:
   with no exceptions.
 - **History is snapshot-based.** Commits here intentionally do not mirror the
   internal commit history.
+
+## Releases
+
+Tagged releases are cut from `main` as `vMAJOR.MINOR.PATCH` (with `-rcN` for
+release candidates), and each one carries the packaged Helm chart. Repository,
+API, service, and chart versions advance independently; component version bumps
+land on `main` through the pull request flow above before they are included in a
+release. Successful `main` CI automatically releases deployable changes while
+documentation, workflow, and test-only changes are skipped. See
+[docs/RELEASING.md](docs/RELEASING.md) for the full process and manual path.
 
 ## Development
 
