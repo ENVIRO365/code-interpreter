@@ -82,6 +82,13 @@ RUN apt-get update && \
     file \
     jq \
     poppler-utils \
+    pandoc \
+    libreoffice-writer \
+    libreoffice-calc \
+    libreoffice-impress \
+    tesseract-ocr \
+    tesseract-ocr-eng \
+    debianutils \
     fonts-dejavu \
     fonts-liberation \
     libnl-route-3-200 \
