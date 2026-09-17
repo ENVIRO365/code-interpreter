@@ -79,6 +79,74 @@ jobs:
           echo "Pushed tag:    ${ECR_URI}:${IMAGE_TAG}"
           echo "Immutable ref: ${ECR_URI}@${digest}"
           echo
-          echo "Next (manual, when cutting a new MicroVM image version):"
+          echo "  scripts/build-lambda-microvm-artifact.sh zip upload"
+          echo "  then service/scripts/create-microvm-image.ts --artifact s3://..."
+
+  # ---------------------------------------------------------------------------
+  # Control-plane images (Path A self-hosted stack) -> Momentum ECR.
+  #
+  # One matrix job builds and pushes every image the depman spec references,
+  # all tagged with the same short SHA so a deploy pins a coherent set:
+  #   api, worker, file-server (service/Dockerfile targets)
+  #   egress-gateway, tool-call-server (standalone Dockerfiles)
+  #   sandbox-runner (api/Dockerfile target sandbox-runner-baked: KVM mode with
+  #     /pkgs baked in — this is the image that carries our fork's packages)
+  #
+  # Built for linux/amd64 (Momentum EKS x86 node groups). If the cluster moves
+  # to Graviton/arm64, change CONTROL_PLANE_PLATFORM and the runner to match.
+  build-control-plane:
+    name: Build and Push Control-Plane Images
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      CONTROL_PLANE_PLATFORM: linux/amd64
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { repo: synapseai-codeapi,          dockerfile: service/Dockerfile,                 target: api }
+          - { repo: synapseai-codeapi-worker,   dockerfile: service/Dockerfile,                 target: worker }
+          - { repo: synapseai-codeapi-files,    dockerfile: service/Dockerfile,                 target: production }
+          - { repo: synapseai-codeapi-toolcall, dockerfile: service/Dockerfile.tool-call-server, target: production }
+          - { repo: synapseai-codeapi-egress,   dockerfile: service/Dockerfile.egress-gateway,   target: production }
+          # NOTE: repo must exist in ECR before this row can push. Confirm the
+          # final name with the ecr-repositories owner and update here + in the
+          # depman spec (specs/dev/code-intepreter.yaml).
+          - { repo: synapseai-codeapi-sandbox,  dockerfile: api/Dockerfile,                     target: sandbox-runner-baked }
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.ENVIRO_ECR_AWS_ACCESS_KEY }}
+          aws-secret-access-key: ${{ secrets.ENVIRO_ECR_AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set short SHA
+        id: sha
+        run: echo "short=$(echo ${{ github.sha }} | cut -c1-7)" >> "$GITHUB_OUTPUT"
+
+      - name: Set up BuildKit
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push ${{ matrix.repo }}
+        env:
+          IMAGE_URI: ${{ env.ECR_REGISTRY }}/${{ matrix.repo }}:${{ steps.sha.outputs.short }}
+        run: |
+          docker buildx build \
+            --platform "$CONTROL_PLANE_PLATFORM" \
+            --target "${{ matrix.target }}" \
+            --provenance=false \
+            --sbom=false \
+            -f "${{ matrix.dockerfile }}" \
+            -t "$IMAGE_URI" \
+            --push \
+            .
+          echo "Pushed $IMAGE_URI"
           echo "  scripts/build-lambda-microvm-artifact.sh zip upload"
           echo "  then service/scripts/create-microvm-image.ts --artifact s3://..."
