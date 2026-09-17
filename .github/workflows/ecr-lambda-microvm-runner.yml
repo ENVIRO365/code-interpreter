@@ -9,7 +9,10 @@ on:
 env:
   AWS_REGION: af-south-1
   ECR_REGISTRY: 323463077991.dkr.ecr.af-south-1.amazonaws.com
-  ECR_REPOSITORY: synapseai-codeapi
+  # Lambda MicroVM runner (Path B) pushes to its own dedicated repo — never the
+  # synapseai-codeapi API repo, whose immutable tags would collide with the
+  # control-plane matrix sharing the same short SHA.
+  ECR_REPOSITORY: synapseai-codeapi-microvm-runner
 
 permissions:
   contents: read
