@@ -1,0 +1,84 @@
+name: Build and Push Lambda MicroVM Runner to ECR
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+env:
+  AWS_REGION: af-south-1
+  ECR_REGISTRY: 323463077991.dkr.ecr.af-south-1.amazonaws.com
+  ECR_REPOSITORY: synapseai-codeapi
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ecr-lambda-microvm-runner-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  build-and-push:
+    name: Build and Push Runner Image
+    # arm64 runner: the lambda-microvm-runner target must be a native arm64
+    # image (Lambda MicroVMs builds on the AL2023 arm64 base). Matches the
+    # runner used by the ci.yml validation job.
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+    outputs:
+      image_tag: ${{ steps.sha.outputs.short }}
+      image_uri: ${{ steps.uri.outputs.value }}
+
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.ENVIRO_ECR_AWS_ACCESS_KEY }}
+          aws-secret-access-key: ${{ secrets.ENVIRO_ECR_AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set short SHA
+        id: sha
+        run: echo "short=$(echo ${{ github.sha }} | cut -c1-7)" >> "$GITHUB_OUTPUT"
+
+      - name: Create native BuildKit builder
+        run: |
+          test "$(uname -m)" = "aarch64"
+          docker buildx create \
+            --name lambda-microvm-ecr \
+            --driver docker-container \
+            --use
+          docker buildx inspect --bootstrap
+
+      - name: Build and push via repo script
+        # Delegates to scripts/build-lambda-microvm-artifact.sh so CI behaviour
+        # (buildx flags, provenance/SBOM off, digest capture) stays identical
+        # to a local run. The script's push stage re-tags and pushes; ECR login
+        # inside the script is redundant after amazon-ecr-login but harmless.
+        env:
+          ECR_URI: ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}
+          IMAGE_TAG: ${{ steps.sha.outputs.short }}
+          AWS_REGION: ${{ env.AWS_REGION }}
+        run: scripts/build-lambda-microvm-artifact.sh build push
+
+      - name: Record image URI
+        id: uri
+        env:
+          ECR_URI: ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}
+          IMAGE_TAG: ${{ steps.sha.outputs.short }}
+        run: |
+          digest="$(sed -n '1p' .build-lambda-microvm/image-digest)"
+          echo "value=${ECR_URI}@${digest}" >> "$GITHUB_OUTPUT"
+          echo "Pushed tag:    ${ECR_URI}:${IMAGE_TAG}"
+          echo "Immutable ref: ${ECR_URI}@${digest}"
+          echo
+          echo "Next (manual, when cutting a new MicroVM image version):"
+          echo "  scripts/build-lambda-microvm-artifact.sh zip upload"
+          echo "  then service/scripts/create-microvm-image.ts --artifact s3://..."
