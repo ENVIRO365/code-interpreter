@@ -92,6 +92,15 @@ jobs:
   # all tagged with the same short SHA so a deploy pins a coherent set:
   #   api, worker, file-server (service/Dockerfile targets)
   #   egress-gateway, tool-call-server (standalone Dockerfiles)
+  #   sandbox-runner (api/Dockerfile target sandbox-runner: NsJail/directory-root
+  #     mode — Momentum nodes have no /dev/kvm, so packages come from a PVC, not
+  #     a baked image; the baked target is only for the KVM path we can't use)
+  #   package-init (docker/Dockerfile.package-init: populates the packages PVC
+  #     with the Python/Node/Bun runtime tree on deploy)
+  #
+  # Built for linux/amd64 (Momentum EKS x86 node groups). If the cluster moves
+  # to Graviton/arm64, change CONTROL_PLANE_PLATFORM and the runner to match.
+  #   egress-gateway, tool-call-server (standalone Dockerfiles)
   #   sandbox-runner (api/Dockerfile target sandbox-runner-baked: KVM mode with
   #     /pkgs baked in — this is the image that carries our fork's packages)
   #
@@ -112,10 +121,12 @@ jobs:
           - { repo: synapseai-codeapi-files,    dockerfile: service/Dockerfile,                 target: production }
           - { repo: synapseai-codeapi-toolcall, dockerfile: service/Dockerfile.tool-call-server, target: production }
           - { repo: synapseai-codeapi-egress,   dockerfile: service/Dockerfile.egress-gateway,   target: production }
-          # NOTE: repo must exist in ECR before this row can push. Confirm the
-          # final name with the ecr-repositories owner and update here + in the
-          # depman spec (specs/dev/code-intepreter.yaml).
-          - { repo: synapseai-codeapi-sandbox,  dockerfile: api/Dockerfile,                     target: sandbox-runner-baked }
+          # NsJail mode (no /dev/kvm on Momentum nodes): directory-root runner.
+          # Packages are delivered via the packages PVC + package-init Job below.
+          - { repo: synapseai-codeapi-sandbox,  dockerfile: api/Dockerfile,                     target: sandbox-runner }
+          # Populates the sandbox packages PVC (Python/Node/Bun) on deploy. Repo
+          # must exist in ECR before this row can push.
+          - { repo: synapseai-codeapi-package-init, dockerfile: docker/Dockerfile.package-init }
     steps:
       - name: Checkout source code
         uses: actions/checkout@v4
@@ -141,9 +152,15 @@ jobs:
         env:
           IMAGE_URI: ${{ env.ECR_REGISTRY }}/${{ matrix.repo }}:${{ steps.sha.outputs.short }}
         run: |
+          # --target only when the matrix row names one (package-init is a
+          # single-stage Dockerfile and has no target stage).
+          TARGET_FLAG=()
+          if [ -n "${{ matrix.target }}" ]; then
+            TARGET_FLAG=(--target "${{ matrix.target }}")
+          fi
           docker buildx build \
             --platform "$CONTROL_PLANE_PLATFORM" \
-            --target "${{ matrix.target }}" \
+            "${TARGET_FLAG[@]}" \
             --provenance=false \
             --sbom=false \
             -f "${{ matrix.dockerfile }}" \
@@ -151,5 +168,3 @@ jobs:
             --push \
             .
           echo "Pushed $IMAGE_URI"
-          echo "  scripts/build-lambda-microvm-artifact.sh zip upload"
-          echo "  then service/scripts/create-microvm-image.ts --artifact s3://..."
