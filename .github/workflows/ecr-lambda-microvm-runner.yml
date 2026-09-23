@@ -123,7 +123,7 @@ jobs:
           - { repo: synapseai-codeapi-egress,   dockerfile: service/Dockerfile.egress-gateway,   target: production }
           # NsJail mode (no /dev/kvm on Momentum nodes): directory-root runner.
           # Packages are delivered via the packages PVC + package-init Job below.
-          - { repo: synapseai-codeapi-sandbox,  dockerfile: api/Dockerfile,                     target: sandbox-runner }
+          - { repo: synapseai-codeapi-sandbox-runner, dockerfile: api/Dockerfile,              target: sandbox-runner }
           # Populates the sandbox packages PVC (Python/Node/Bun) on deploy. Repo
           # must exist in ECR before this row can push.
           - { repo: synapseai-codeapi-package-init, dockerfile: docker/Dockerfile.package-init }
