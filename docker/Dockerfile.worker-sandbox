@@ -134,6 +134,8 @@ RUN apt-install \
     bc \
     jq \
     poppler-utils \
+    qpdf \
+    imagemagick \
     pandoc \
     libreoffice-writer \
     libreoffice-calc \
@@ -143,6 +145,8 @@ RUN apt-install \
     debianutils \
     fonts-dejavu \
     fonts-liberation \
+    fonts-crosextra-carlito \
+    fonts-crosextra-caladea \
     libnl-route-3-200 \
     libprotobuf32 \
     libffi8 \

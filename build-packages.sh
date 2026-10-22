@@ -215,6 +215,7 @@ install_python_packages() {
         vsdx \
         pypdf \
         pdfplumber \
+        pypdfium2 \
         defusedxml \
         lxml \
         validators \

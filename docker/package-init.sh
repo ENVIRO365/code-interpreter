@@ -95,6 +95,7 @@ packages_ready() {
     [ -d "/pkgs/python/${PYTHON_VERSION}/lib/python${PYTHON_SITE_VERSION}/site-packages/statsmodels" ] &&
     [ -d "/pkgs/python/${PYTHON_VERSION}/lib/python${PYTHON_SITE_VERSION}/site-packages/rasterio" ] &&
     [ -d "/pkgs/python/${PYTHON_VERSION}/lib/python${PYTHON_SITE_VERSION}/site-packages/pdfplumber" ] &&
+    [ -d "/pkgs/python/${PYTHON_VERSION}/lib/python${PYTHON_SITE_VERSION}/site-packages/pypdfium2" ] &&
     [ -f "/pkgs/node/${NODE_VERSION}/.package-installed" ] &&
     js_packages_ready "/pkgs/node/${NODE_VERSION}" &&
     [ -f "/pkgs/bun/${BUN_VERSION}/.package-installed" ] &&
@@ -236,6 +237,7 @@ if [ -f "$PIP_PATH" ]; then
         vsdx \
         pypdf \
         pdfplumber \
+        pypdfium2 \
         defusedxml \
         lxml \
         validators \

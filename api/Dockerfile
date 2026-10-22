@@ -103,6 +103,8 @@ RUN apt-get update && \
     file \
     jq \
     poppler-utils \
+    qpdf \
+    imagemagick \
     pandoc \
     libreoffice-writer \
     libreoffice-calc \
@@ -112,6 +114,8 @@ RUN apt-get update && \
     debianutils \
     fonts-dejavu \
     fonts-liberation \
+    fonts-crosextra-carlito \
+    fonts-crosextra-caladea \
     libnl-route-3-200 \
     libprotobuf32 \
     libffi8 \
@@ -131,6 +135,27 @@ RUN apt-get update && \
 # coreutils) — mawk has no system() / getline-from-command extensions
 # in its minimal build.
 RUN [ -x /usr/bin/mawk ] && ln -sf /usr/bin/mawk /usr/bin/awk
+
+# NsJail jobs see /usr but not /etc (only ld.so.cache and a static hosts file
+# are mounted). Debian keeps many /usr symlinks pointing into /etc:
+# alternatives (ImageMagick's convert/magick, libblas/liblapack, which,
+# pager), LibreOffice's registry main.xcd (without it soffice aborts with
+# com::sun::star::uno::RuntimeException) and the OpenSSL certs. Re-point each
+# link at its /usr target, or copy the /etc file in when it lives only in /etc.
+# fontconfig and ImageMagick read /etc/fonts and /etc/ImageMagick-7 by
+# absolute path, so stage copies under /usr for sandbox.cfg to bind there.
+RUN find /usr -xdev -type l -lname '/etc/*' | while read -r link; do \
+        target="$(readlink -f "$link")" || continue; \
+        [ -e "$target" ] || continue; \
+        case "$target" in \
+            /usr/*) ln -sfn "$target" "$link" ;; \
+            *) rm "$link" && cp -a --dereference "$target" "$link" ;; \
+        esac; \
+    done \
+    && ! find /usr -xdev -type l -lname '/etc/*' -exec test -e {} \; -print | grep . \
+    && mkdir -p /usr/local/share/sandbox-etc \
+    && cp -a --dereference /etc/fonts /usr/local/share/sandbox-etc/fonts \
+    && cp -a --dereference /etc/ImageMagick-7 /usr/local/share/sandbox-etc/ImageMagick-7
 
 RUN sed -i '/en_US.UTF-8/s/^# //g' /etc/locale.gen && locale-gen
 
