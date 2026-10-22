@@ -3,6 +3,9 @@
 Provider-neutral protocol and worker CLI for attaching a stateful, sandboxed
 code environment to LibreChat Code API.
 
+Requires Node.js 22.21 or newer. CI tests Node.js 22 and 24; Node.js 20 is
+unsupported.
+
 For a complete machine setup and operations guide, see the
 [self-hosted worker runbook](../../docs/remote-bridge/worker-runbook.md).
 
@@ -213,11 +216,54 @@ SRT with:
   worker's private scratch directory;
 - read access denied to the worker's home directory except for that workspace;
 - paired identity and mutation-quarantine files explicitly denied;
+- the registered workspace's own Git metadata denied writes — `.git/hooks`
+  and `.git/config` always, plus `.git/config.worktree`, `.git/commondir`,
+  and the equivalent files under `.git/modules/*` and `.git/worktrees/*`
+  where they already exist — so a sandboxed command cannot plant a hook or a
+  `filter`/`fsmonitor`/`diff` config entry that would run unsandboxed the
+  next time Git runs in the checkout;
 - `LIBRECHAT_CODE_*` and nonessential inherited environment variables removed;
 - network egress denied by default, local binding denied, and Unix sockets
   denied; and
 - bounded time and aggregate output, with best-effort process-group termination
   on cancellation, timeout, and completion.
+
+Native command output keeps a prefix and rolling suffix for each stream, so late
+summaries and errors survive truncation. Each stream stores at most
+`maxOutputBytes` of copied raw bytes while the command runs, independent of output
+volume or chunk count. When both streams are noisy they split the existing combined
+response budget equally, with the odd byte reserved for stderr; a quiet stream gives
+its unused allowance to the other based on rendered UTF-8 bytes, including replacement
+characters for malformed input. Sandbox violation annotations enter the same
+stderr window before rendering. UTF-8 boundaries and inline
+`[... N bytes omitted ...]` markers count toward the combined byte limit. The count
+reports omitted raw bytes for that stream, including annotation bytes. If a stream's
+allowance cannot fit its marker, only the retained text and the existing `truncated`
+flag are returned. Truncation does not stop execution. Exit codes, timeout/signal
+fields, and cancellation errors keep their existing semantics, and no new request,
+result, or capability keys are introduced.
+
+The Git-metadata denies are applied to the registered root directly rather
+than relying on SRT's Linux mandatory denies, which are derived from the
+worker process's own current directory — the worker home, not the workspace —
+and so never covered the registered root; macOS already enforced the
+equivalent through global Seatbelt patterns, and this keeps the guarantee
+identical on both platforms regardless of the worker's cwd. The set is
+recomputed before every command, so a repository, submodule, or linked
+worktree created on the host after the worker starts is covered from the next
+command, and metadata the worker cannot inspect fails the command closed.
+`.git/commondir` and `.git/config.worktree` are denied only where they already
+exist, because Git reads them strictly and SRT would otherwise mask an absent
+one with a stub Git cannot open, failing every Git command. Because the whole
+workspace stays writable, a sandboxed command can still stage Git
+configuration Git will honor later by other means — for example replacing
+the entire `.git` directory, writing a new `commondir` that redirects the
+common directory, creating a missing `config.worktree` in a repository that
+already enables the `worktreeConfig` extension, or initializing a fresh
+nested repository. Denying those safely would require
+making the workspace's Git storage structurally read-only, which the
+personal-machine SRT trust model does not; use the Docker/NsJail backend or a
+dedicated VM boundary when a workspace command must be treated as adversarial.
 
 SRT restrictions remain inherited by descendants. Windows additionally uses a
 kill-on-close Job Object. Native macOS does not provide an equivalent hard
@@ -283,14 +329,49 @@ repositories the agent may access:
 
 ```bash
 LIBRECHAT_CODE_GITHUB_APP_ID=12345 \
-LIBRECHAT_CODE_GITHUB_INSTALLATION_ID=67890 \
 LIBRECHAT_CODE_GITHUB_PRIVATE_KEY_FILE=/secure/librechat-agent.pem \
 librechat-code run --worker-dir /path/to/project --allow-workspace-commands
 ```
 
 The private key must be an owner-only regular file outside the workspace. It is
 read only by the trusted worker, which mints and refreshes short-lived
-installation tokens. A personal access token is supported as a fallback with
+installation tokens. At startup, the worker binds each explicitly admitted
+workspace root to its Git repository. Commands in those independent roots can
+use simultaneous installations on personal accounts and organizations without
+being restarted or reconfigured, while a command cannot gain access by changing
+its workspace's remote URL. Tokens are scoped and cached per repository.
+
+For trusted VMs that intentionally work in multiple Git checkouts beneath one
+admitted root, opt in to `--github-repository-routing checkout` (or
+`LIBRECHAT_CODE_GITHUB_REPOSITORY_ROUTING=checkout`) together with the
+`trusted-vm` command policy. Each command then uses the repository identified
+by its current checkout's local `origin` URL, including linked worktrees.
+The command must set its working directory to that checkout; a shell `cd`
+inside a command does not change which credential was selected before launch.
+This does not widen the admitted filesystem roots, but a command able to alter
+a checkout's remote can obtain a token for **any repository where the App is
+installed**. Use this mode only where the machine operator trusts the VM and
+the App's installation scope; the default `admitted` mode keeps the startup
+binding. Checkout routing requires an App without a fixed installation ID.
+
+On a trusted VM, `--github-token-scope installation` (or
+`LIBRECHAT_CODE_GITHUB_TOKEN_SCOPE=installation`) mints one token for all
+repositories GitHub grants to the resolved App installation. This lets a
+command started in one checkout push to another repository in the same account
+or organization, including through `cd` or `git -C`, and use organization
+Projects. GitHub still enforces the installation's selected repositories and
+permissions. Tokens are shared by installation, refreshed after two minutes,
+and kept out of the sandbox's readable environment. The default remains
+`repository`. A command crossing to another account or organization still
+needs to start in a checkout belonging to that account or organization.
+
+For compatibility with deployments that intentionally bind a worker to one
+installation, set the optional legacy
+`LIBRECHAT_CODE_GITHUB_INSTALLATION_ID` fallback.
+
+App-authenticated commits use the GitHub App bot's canonical no-reply identity,
+so GitHub links them to the bot profile and avatar. A personal access token is
+supported as a fallback with
 `LIBRECHAT_CODE_GITHUB_TOKEN`, but the GitHub App is the safer default because
 its repository access and permissions can be narrowly installed and revoked.
 Native Windows credential storage is unavailable until native DACL removal and
@@ -555,6 +636,59 @@ installed as one atomic mutation. Code API dispatches the batch form only after
 the worker and server negotiate `batch` in `editFileModes`.
 Revision-fenced edits likewise require the negotiated
 `expected_base_sha256` entry in `editFileFeatures`.
+
+Edits apply in order, each to the text the earlier ones produced. When any edit
+fails, the worker still checks the rest and rejects the whole batch with one
+`EDIT_CONFLICT` whose message lists every failing edit by position. Large
+batch messages shorten reasons and source excerpts to stay within the bound,
+but never omit failing edit positions. A missing edit names the nearest
+candidate line and flags elided (`...`) or line-numbered `oldText`, a
+whitespace-only difference, or CRLF line endings. When the file has a region
+that `oldText` most likely meant (the alignment where the most of its
+distinctive lines fall into place, or its unique first line or closest line),
+the reason ends with `the current text at lines A-B (~ whitespace differs, !
+text differs) is "<rows>"`: a JSON string of at most 8 rows of the form
+`<line>|<mark><text>`, each line shortened to 160 characters, where the mark is
+a space for a line identical to `oldText` at that position, `~` when only its
+whitespace differs and `!` when its text differs. Excerpts are the first detail
+dropped to fit the message bound, and never shorten another edit's reason. Both
+the excerpt (1,600 bytes) and the message that carries it (3,800 bytes) are
+measured as UTF-8 once JSON-encoded, so the Code API's error body stays within
+the 4,096 bytes hosts such as LibreChat read.
+An ambiguous edit gives its match count and line numbers. Overlapping
+occurrences count as separate locations. Detailed source-line excerpts require
+`read_file` or `preview_edit` on the same workspace; edit-only workers return a
+generic failure and its error code without revealing file contents. A preview
+itself exposes the resulting file text, so it is read-capable.
+
+Two optional features change matching, each negotiated in `editFileFeatures`
+before Code API dispatches it:
+
+- `tolerant_match`: a request-level `matching: 'tolerant'` falls back from an
+  exact match to, in order, `line-trimmed` (ignores trailing whitespace and
+  CRLF), `indentation-flexible` (a uniformly shifted block, with `newText`
+  moved to the file's indentation) and `whitespace-normalized` (any whitespace
+  run between complete whitespace-delimited tokens, never a prefix or suffix
+  of another token). Without `replaceAll`, a match must still be unique;
+  replacements use the matched line's ending even in mixed-ending files. The
+  whitespace-normalized tier peels the complete shared newline-and-indentation
+  wrapper from `newText` even when CRLF/LF or nearby spaces differ, without
+  removing intentional extra line breaks or duplicating the source line ending.
+  Boundary whitespace claimed by `oldText`, including the number of line breaks,
+  must exist beside the matched tokens in the source; an attempt to remove it
+  with a token-only fallback fails rather than silently preserving it. Exact and
+  line-window matches can still replace terminators.
+  Excessively repetitive indentation candidates fail closed with a request
+  for more context rather than scanning every long window. Dense files reuse a
+  compact newline index for matching and diagnostics; overlapping exact matches
+  are counted without restarting a scan at each offset.
+- `replace_all`: a batch edit's `replaceAll: true` replaces every
+  non-overlapping match instead of requiring exactly one, and still fails when
+  nothing matches.
+
+A request that sets `matching` or any `replaceAll` receives `matches`, one
+`{ strategy, occurrences }` entry per edit. Requests that set neither receive
+exactly the legacy result.
 Only IDs, names, protocol version, supported operations, and negotiated write
 modes appear in worker capabilities; absolute host paths remain local to the
 worker process.
@@ -598,9 +732,10 @@ native SRT command backend. This operator switch controls availability;
 LibreChat tool approval hooks remain the user-facing allow/deny boundary for
 each invocation.
 
-Reads reject absolute paths, traversal, escaping symlinks, non-regular files,
-and files larger than 1 MiB. The opened file is checked against its canonical
-in-workspace inode before it is read. Text search uses `rg` only to enumerate a
+Reads reject absolute paths, traversal, escaping symlinks, and non-regular files.
+The opened file is checked against its canonical in-workspace inode before it is
+read. Ordinary reads stream bounded line windows even from files larger than 1 MiB;
+see the [read contract](WORKSPACE-READS.md). Text search uses `rg` only to enumerate a
 bounded set of ignored-aware candidates with configuration and symlink following
 disabled. It then opens and verifies each candidate through the same confined
 1 MiB read boundary before matching locally. File listing invokes `rg` without
@@ -620,8 +755,10 @@ non-regular files, and commit through an owner-only temporary file followed by
 an atomic rename. The worker syncs the containing directory and verifies that
 the installed inode still contains the requested bytes before reporting
 success. Edits replace text only when the requested old text occurs exactly
-once and reject if the file changes before commit. These operations do not
-create directories or execute commands.
+once (unless negotiated `replaceAll` selects every non-overlapping match) and
+reject if the file changes before commit. Intermediate replacements are bounded
+before construction, including `replaceAll`; these operations do not create
+directories or execute commands.
 
 Register one directory already present on the worker machine with the
 worker-directory option:
@@ -696,14 +833,209 @@ Slots are per machine, not a fleet-wide execution limit. A busy machine does not
 consume another machine's slots. Requests for the same root remain serialized,
 including commands started through background tools. Independent checkouts can
 use different slots; selecting subdirectories beneath one registered parent root
-does not create separate scheduling boundaries. Linked Git worktrees share Git
-metadata and are not supported by selected-project registration.
+does not create separate scheduling boundaries.
 
-Admission waits at most 30 seconds. A `WORKSPACE_QUEUE_TIMEOUT` response (HTTP
-503, `Retry-After: 1`) means the operation was not assigned or started; wait for
+To bind each conversation to an isolated checkout of the selected Git
+repository, configure worker-owned conversation worktrees:
+
+```sh
+librechat-code run \
+  --worker-dir /projects/LibreChat \
+  --workspace-lease-slots 4 \
+  --conversation-worktree-root /var/lib/librechat-code/worktrees \
+  --conversation-worktree-max 64 \
+  --conversation-worktree-clone-timeout-ms 300000 \
+  --allow-workspace-writes \
+  --allow-workspace-commands
+```
+
+`LIBRECHAT_CODE_CONVERSATION_WORKTREE_ROOT` and
+`LIBRECHAT_CODE_CONVERSATION_WORKTREE_MAX` are the environment equivalents;
+`LIBRECHAT_CODE_CONVERSATION_WORKTREE_CLONE_TIMEOUT_MS` controls the bounded
+clone budget (five minutes by default, from 30 seconds through 30 minutes).
+The storage root must be owner-controlled, must not overlap a registered
+workspace, and every registered source must be a Git repository. The worker
+creates a deterministic branch in an isolated local checkout for the opaque
+conversation identity supplied by LibreChat. Each checkout owns its writable
+Git metadata and object storage, without alternates or hardlinks to the source.
+Provisioning pins the source Git-directory and object-store identities. It copies
+Git data through no-follow, descriptor-relative reads into private staging before
+running Git; source hooks and config includes are not used. The clone budget
+also bounds this snapshot. Local hardlinks only connect private staging to its
+new checkout, never to the source; staging is removed before setup. Source
+alternates admitted at worker startup are materialized into independent objects.
+Git metadata replacement requires operator recovery, not automatic re-admission.
+Host paths remain private. The configured count
+is a hard per-machine quota, provisioning is serialized, and operations for one
+conversation remain serialized while different conversations may occupy
+different lease slots. Recognizable abandoned checkouts without a lifecycle
+record are discarded before admission. New provisioning reserves its record
+before starting Git or setup; a worker crash leaves that checkout reserved for
+operator recovery because child processes might still be running.
+Reservations count even when a crash happens before a checkout directory exists.
+
+Cancellation also covers waiting for the provisioning lock, cloning, and setup.
+The worker waits for setup cleanup before releasing the assignment. If cleanup
+cannot be confirmed, the checkout stays reserved and fails closed on restart.
+A completed checkout with a changed source identity or invalid completion record
+is preserved for operator recovery, including any uncommitted work. After stopping
+the worker and confirming no executor still uses the checkout, an operator can
+archive the affected checkout and its adjacent `.complete` record before retrying.
+Also archive any adjacent `.source` staging directory. Pre-release version-1
+completion records are deliberately preserved but not admitted by this version;
+they do not contain the required source Git identity binding.
+
+By default, GitHub App routing is inherited from the operator-admitted source
+repository; commands cannot select a different installation by rewriting a
+worktree remote. On trusted VMs, the opt-in checkout routing mode above instead
+uses the current worktree's local `origin` URL, within the admitted root.
+Legacy requests without a conversation identity continue to use the selected
+source root. Older Code API deployments do not negotiate the capability, so the
+worker omits it until every request path understands the isolation boundary.
+
+#### Linked worktree lanes
+
+Agents that keep one checkout and give each task its own linked worktree
+(`git worktree add .worktrees/<task>`) can run those tasks concurrently:
+
+```sh
+librechat-code run \
+  --worker-dir /projects/LibreChat \
+  --workspace-lease-slots 4 \
+  --linked-worktree-lanes \
+  --allow-workspace-writes \
+  --allow-workspace-commands
+```
+
+`LIBRECHAT_CODE_LINKED_WORKTREE_LANES=true` is the environment equivalent. The
+worker then advertises `workspaceScopes: ['git_linked_worktree']` for each
+registered root, and a request that names `worktree: <name>` runs in its own
+lane at `<root>/.worktrees/<name>`, with `cwd` and file paths relative to that
+worktree. Sibling lanes run concurrently up to the negotiated slot count. A
+lane and its checkout never run at the same time: requests without a
+`worktree`, including `git worktree add` or `remove` run at the root, wait for
+every lane beneath the checkout, and a waiting root request holds back newer
+lanes so it cannot be starved.
+
+Before admission the worker verifies, without running Git, that the directory
+is a real linked worktree of that checkout: no symlinks on the path, a `.git`
+file pointing at `<root>/.git/worktrees/<name>`, and metadata whose `commondir`
+and `gitdir` point back. Shared Git storage paths granted for writes must be
+real directories, not symlinks into sibling metadata; optional log and LFS
+paths may be absent. A lane's sandbox can write only its worktree, the
+shared object and ref storage (`.git/objects`, `.git/refs`, `.git/logs/refs`,
+`.git/lfs`) and its own `.git/worktrees/<name>` metadata. Everything else in
+`.git` stays read-only: configuration, hooks and `info`, the checkout's own
+`HEAD`, index and merge or rebase state, and sibling metadata. Automatic `gc`
+and maintenance are disabled, and `git gc` itself cannot run in a lane (it
+needs to write `.git/gc.pid` and `packed-refs`). A lane's `PATH` starts with
+a read-only Git wrapper that refuses `prune`, `gc`, `repack`, `prune-packed`,
+`maintenance`, `multi-pack-index`, `for-each-repo` and `git lfs prune`,
+including after Git options such as `-C` or `-c`. `for-each-repo` is refused
+entirely because Git dispatches its child commands without re-entering the
+wrapper. It rejects `git lfs fetch` or `pull` with
+`--prune`/`-p`, and `git fetch` or `pull` with `--auto-maintenance`/`--auto-gc`.
+It enforces `maintenance.auto=false`, `gc.auto=0` and `help.autocorrect=0`
+after caller-supplied Git options, preventing those overrides from restoring
+automatic maintenance or correcting a misspelled command to `prune`.
+It also refuses **all configured Git aliases**,
+including harmless ones: aliases can hide destructive maintenance through
+local config, `-c`, `--config-env`, includes or shell commands. Call the
+underlying Git command instead, or run the alias from the checkout. Git's
+safe pathspec options (`--literal-pathspecs`, `--glob-pathspecs`,
+`--noglob-pathspecs`, `--icase-pathspecs`) remain usable in lanes. Run storage
+maintenance from the checkout.
+
+This is a guardrail against accidental commands, **not** a filesystem
+boundary: invoking Git by an absolute path, resetting `PATH`, or using a
+script that does either bypasses it. Such commands can still delete a sibling
+lane's unpublished objects. Do not enable concurrent lanes for agents or
+scripts that deliberately bypass the wrapper. The guard requires `/bin/bash`
+and a trusted system Git executable; without either, lane commands are not
+admitted. Deleting a branch or tag also needs the checkout, because Git locks
+`packed-refs` for every ref deletion. Each lane has its own durable quarantine
+guard. A lane cannot start while its checkout is quarantined, and a checkout
+cannot start while any lane beneath it is.
+
+Lanes require native-srt commands and at least two lease slots, and cannot yet
+be combined with conversation worktrees. Code API must advertise
+`supportedWorkspaceScopes`; older deployments do not, and the worker omits the
+scope for them. Deploy consumers that read worker status (such as LibreChat)
+with support for `workspaceScopes` before enabling lanes on a worker.
+
+##### Retiring stale linked worktrees
+
+Nothing else removes a task's worktree once its work is pushed, and each one
+keeps its own dependencies and build output. A worker with lanes therefore
+retires stale ones itself, with no configuration: a pass runs two minutes after
+startup and every six hours after that, sooner while a backlog remains, and
+also before managed environment setup would be deferred for low disk space.
+Passes run in the background and never overlap. Only an actual removal holds
+back requests, and only those for that lane or its checkout.
+
+A worktree in a writable registered root is retired only when **all** of these
+hold; otherwise it is kept and the reason is counted:
+
+- It verifies as a linked worktree of the checkout under `.worktrees/`, as for
+  lane admission. The checkout itself and worktrees elsewhere are never
+  touched.
+- Neither the lane nor its checkout has a request in flight or ran one while
+  the worktree was being inspected, and both this
+  worker's last use of the lane and the newest on-disk activity (the worktree
+  directory and its Git `HEAD`, `index`, `logs/HEAD`, `ORIG_HEAD` and
+  `FETCH_HEAD`) are older than the idle threshold, seven days by default.
+- It has no modified tracked files and no untracked files the repository does
+  not ignore; no merge, rebase, cherry-pick, revert or bisect in progress; no
+  `git worktree lock`; and no quarantine on the lane or its checkout.
+- Its `HEAD` commit, including a detached one, is contained in at least one
+  remote-tracking ref (`refs/remotes/*`), or its work is already in the
+  remote's default branch by content, as after a squash or rebase merge whose
+  remote branch was deleted. Content counts only when `HEAD` has no live
+  upstream (it is detached, never pushed, or its upstream ref is gone) and
+  either every commit beyond the default branch is patch-equivalent to one in
+  it (`git cherry` shows only `-`, with no merge commits), or the default
+  branch has identical content at every path the branch changed since their
+  merge base. The default branch is the remote's `HEAD`, else `main` or
+  `master`, as last fetched; the worker never fetches or calls a hosting API.
+  Commits beyond a live upstream are never treated as merged.
+
+Removal is `git worktree remove` **without** `--force`, so Git re-checks for
+changes itself and deletes only that worktree's metadata. No repository-wide
+`git worktree prune` runs, so other registered worktrees that are temporarily
+unavailable stay registered. Removal has no timeout, because a half-deleted
+worktree could no longer be recognized. Ignored files such as `node_modules`,
+build output and ignored `.env` files go with the worktree; that is the space
+being reclaimed. The branch is kept, so
+`git worktree add .worktrees/<name> <branch>` restores the worktree. Lane and
+checkout requests that arrive during a removal wait for it, or for their own
+cancellation; a lane request then fails as an unknown worktree. Each pass reads
+every `.worktrees` entry, inspects at most 128 idle worktrees and removes at
+most 32, oldest first, rotating so that worktrees kept for lasting reasons
+cannot hide the rest. Each pass logs one summary line, for example
+`worktree retirement: retired 3, kept 12 (dirty 2, recent 8, unpushed 2), freed
+about 4.1 GiB`; set `LIBRECHAT_CODE_LOG_LEVEL=debug` to log every kept worktree
+and its reason.
+
+Pass `--no-worktree-retirement` or set `LIBRECHAT_CODE_WORKTREE_RETIREMENT=false`
+to disable retirement. Change the idle threshold with `--worktree-idle-days <n>`
+or `LIBRECHAT_CODE_WORKTREE_IDLE_DAYS=<n>` (1 to 3650 days).
+
+On an updated Code API, admission waits up to 30 seconds without the
+`X-LibreChat-Workspace-Queue-Wait-Ms` request header. A caller may advertise a
+positive integer millisecond allowance up to five minutes, capped by any server
+queue ceiling. This allowance is separate from the `JOB_TIMEOUT` execution
+budget and cannot outlast a shorter client or proxy timeout. A
+`WORKSPACE_QUEUE_TIMEOUT` response (HTTP 503,
+`Retry-After: 1`) means the operation was not assigned or started; wait for
 capacity before submitting it again. This is distinct from `ASSIGNMENT_EXPIRED`
 or a transport timeout after dispatch, where execution may have occurred and
 mutations must not be blindly retried. No automatic retry is added by this policy.
+Align the client's per-attempt timeout and every proxy with the queue **plus**
+execution, settlement, and delivery budget before relying on a longer wait.
+LibreChat keeps the 30-second admission allowance unless its longer total HTTP
+budget is explicitly enabled and the live ingress path is verified. See the
+[BYOM worker admission guide](../../docs/byom-worker-admission.md) for the
+timeout calculations.
 
 Keep the existing URL, pairing/identity, and network policy configuration.
 The primary root keeps its configured workspace ID (default `primary`). Repeat
@@ -747,6 +1079,11 @@ To recover a quarantined native root:
 3. Run the normal worker command with all its root/slot options plus `--reset-workspace-quarantine second`. This verifies the local guard is cleared, resets the server fence, then exits.
 4. Restart the normal worker command without the reset option.
 
+A linked-worktree lane keeps its own guard and fence. Inspect or restore
+`<root>/.worktrees/<name>`, clear its guard with
+`--worker-dir <root>/.worktrees/<name>`, then add
+`--reset-workspace-worktree <name>` to the reset command in step 3.
+
 The workspace selector in LibreChat must preserve these registered IDs. Adding
 roots here does not grant a principal access or change an agent's selected root.
 # Named project environments
@@ -785,7 +1122,7 @@ worker runs. This inspection happens at startup, not on the command hot path.
 
 Setup is an operator-authorized startup command under the configured native sandbox
 policy. It requires commands to be enabled, runs once per worker startup before
-registration, and must be idempotent for restarts. Its timeout is bounded to five
+registration by default, and must be idempotent for restarts. Its timeout is bounded to five
 minutes and captured output to 8 KiB. Setup failure prevents registration. A nonzero
 exit, timeout, crash or uncertain termination retains the workspace quarantine marker;
 inspect the workspace before running `librechat-code clear-workspace-quarantine
@@ -793,7 +1130,202 @@ inspect the workspace before running `librechat-code clear-workspace-quarantine
 deployment and identity configuration. Only use the separate
 `--reset-workspace-quarantine <environment-name>` run option afterward if a server
 fence also needs clearing. Only successful setup automatically clears its marker.
+
+## Reusing a prepared checkout
+
+Opt in to checkout-local preparation reuse when setup is an installation rather
+than work that must run on every startup:
+
+```yaml
+setup:
+  command: npm ci
+  timeoutMs: 300000
+  reuse:
+    inputs:
+      - package.json
+      - package-lock.json
+      - packages/api/package.json
+      - packages/data-provider/package.json
+    checkCommand: test -f node_modules/.package-lock.json && test -x node_modules/.bin/tsc
+    checkTimeoutMs: 10000
+```
+
+Declare **all** relevant manifests, installation configuration and lifecycle-script
+inputs. There is no globbing or automatic monorepo discovery. Inputs must be
+existing root-confined regular files: at most 32, 8 MiB per file and 32 MiB total.
+Include an operator-maintained toolchain/version file if installation uses tools
+other than the worker's Node runtime. Lockfile equality alone does not prove that
+arbitrary postinstall scripts are reusable.
+
+The worker fingerprints declared file bytes, the setup recipe, checkout inode,
+Node version/ABI, platform/architecture and native command policy. A matching
+worker-owned receipt runs the readiness check instead of setup. A nonzero check
+reruns setup; a timed-out, signalled or aborted check fails without starting a
+replacement command. After successful setup, the check must pass and inputs must
+remain unchanged before the worker publishes a receipt. Receipts are bounded,
+owner-only files alongside the identity, outside all registered roots and denied
+to native commands. Deleting one causes setup to run again; it never clears a
+quarantine. Checks are operator commands under the same sandbox and mutation guard
+as setup, not unsandboxed host scripts. Keep them cheap and non-mutating.
+
+Existing definitions without `reuse` retain the startup behavior. Fresh conversation
+instances use the same preparation contract, with independent checkout receipts.
+This does not attach another checkout's `node_modules`, provision linked lanes on
+command admission, or recheck existing instances on every command. It does not
+deduplicate installed dependencies between worktrees unless snapshots below are
+configured, or enforce disk quotas.
+
+Shared tool cache grants below do not attach another checkout's installed dependency
+tree. Keep monorepo links and mutable outputs checkout-local. Do not broaden the
+sandbox root or symlink another branch's full installation. Shared download caches
+alone do not reduce installed `node_modules` copies.
+
+## Copy-on-write installed dependencies
+
+For matching fresh checkouts on the **same clone-capable filesystem**, add a
+private snapshot store to the readiness contract:
+
+```yaml
+setup:
+  command: npm ci
+  timeoutMs: 300000
+  reuse:
+    inputs: [package.json, package-lock.json]
+    checkCommand: test -x node_modules/.bin/tsc
+    snapshot:
+      store: /srv/lia-state/dependency-snapshots
+      paths: [node_modules]
+      maxBytes: 4294967296
+      maxFiles: 200000
+```
+
+Create the external store as the worker account with mode `0700`. It must not
+overlap any source root, definition, credential or shared tool cache. Commands
+cannot read or write it. Use a separate store per project/trust domain. The
+portable key includes project identity, declared input bytes, recipe, policy,
+Node ABI and platform, but not the checkout inode. Kernel locks serialize setup
+for one key; different keys remain independent. Incomplete clones are never
+published. Cancellation is checked during bounded traversal.
+
+Matching snapshots restore only when **every** declared `node_modules` directory
+is missing. The sandboxed readiness check must pass before accepting the restore.
+Existing directories are never replaced by restoration; ordinary setup handles
+repair. Include nested workspace installations explicitly. Relative checkout-local
+package links are preserved; absolute/escaping links, hard-linked files, links into
+Git/worktree control paths and special files are rejected. Hardlink-based package
+manager layouts need a different adapter; this snapshot mode targets npm copies.
+Changing one restored installation cannot modify the snapshot or another checkout.
+
+This requires APFS clones or Linux reflinks (for example a suitably configured
+XFS/Btrfs volume). The worker verifies cloning before installation and rejects
+unsupported filesystems instead of silently making full copies or writable hard
+links. Ordinary ext4 workers should leave snapshots disabled and can still use
+checkout-local preparation receipts and shared downloads. This is **not** Python
+virtualenv relocation, automatic preparation of manually created linked lanes,
+or a hard quota on arbitrary commands. Validate all install/postinstall inputs
+and path-independent artifacts before opting in.
+
+## Shared tool and download resources
+
+Explicit operator-managed stores can live outside the checkouts:
+
+```yaml
+resources:
+  - kind: npm-cache
+    path: /srv/lia-resources/npm
+    access: read-write
+  - kind: uv-cache
+    path: /srv/lia-resources/uv
+    access: read-write
+  - kind: playwright-browsers
+    path: /srv/lia-resources/playwright
+    access: read-only
+```
+
+Create each directory as the worker service account with mode `0700`, then populate
+browser binaries using the matching Playwright version and `PLAYWRIGHT_BROWSERS_PATH`
+outside the coding session. Roots must exist and may not be symlinks or overlap any
+registered workspace or worker control state. Linux mount-alias checks cover both
+directions. Keep the mount namespace stable while the worker runs.
+
+The worker grants only these paths and injects `npm_config_cache`, `UV_CACHE_DIR`
+and `PLAYWRIGHT_BROWSERS_PATH` from the loaded definition, including in linked lanes
+and fresh conversation worktrees. An undeclared process environment variable never
+grants filesystem access. Each store root is inode-bound and revalidated before
+commands. Read-only stores stay read-only, and speculative programmatic probes
+cannot write any shared store.
+
+Sharing is explicit within one worker's trust domain. Do not share mutable caches
+between unrelated principals, store credentials in them, or treat their contents
+as trusted worker code. Separate package caches from browsers and mutable browser
+profiles, Redis data, build output and test state. Stores currently have no automatic
+eviction. The snapshot lifecycle below does not delete these mutable stores. This shares downloads
+and browser binaries, not installed `node_modules` trees.
 No setup output is sent to the model.
+
+## Storage admission and snapshot lifecycle
+
+Use an explicit free-space floor before managed setup or restoration:
+
+```yaml
+storage:
+  minFreeBytes: 5368709120       # 5 GiB left for the worker and other activity
+  setupReserveBytes: 2147483648 # estimated installation headroom
+```
+
+This works without dependency snapshots. Absent `storage`, preparation retains
+today's behavior. A ready checkout can still pass its readiness check when disk
+is low. When installation is needed, low space rejects it **before** starting the
+setup command, with a specific remediation message. These are soft admission
+checks, not allocated reservations: concurrent processes and arbitrary shell
+writes can still consume space after admission. Put worker identity/quarantine
+state on a separate small volume and use filesystem/project quotas for hard
+containment. This option neither clears quarantine nor deletes source to recover.
+
+The private snapshot store can bound reproducible dependency versions:
+
+```yaml
+setup:
+  # command and reuse inputs/readiness omitted here; retain the full contract above
+  reuse:
+    snapshot:
+      store: /srv/lia-state/dependency-snapshots
+      paths: [node_modules]
+      lifecycle:
+        maxStoreBytes: 21474836480
+        maxEntries: 8
+        retentionMs: 432000000
+        scanLimit: 4096
+```
+
+Cleanup runs during managed preparation and publication. Oldest inactive snapshots
+are reclaimed by last-use age and logical payload/count budgets. Per-key kernel
+locks protect installs, restores and publishers; maintenance never waits on or
+deletes an active key. A short store-wide lock makes budget checks and publication
+atomic, without serializing installations for different keys. Abandoned staging
+directories require a worker ownership manifest and a free key lock before removal.
+Unknown/unmarked entries are reported and preserved. Lock files are kept to avoid
+splitting lock ownership. Scan limits fail closed instead of crawling unbounded data.
+
+The byte budget counts snapshot file lengths, not deduplicated physical blocks,
+metadata overhead or working checkout copies. An otherwise valid prepared checkout
+does not fail when the cache cannot fit another entry: publication is skipped with
+a worker diagnostic, and later low-space admission still applies.
+
+Preview or explicitly apply maintenance without restarting the worker:
+
+```sh
+librechat-code prune-environment-storage --environment /etc/librechat-code/app.yaml
+librechat-code prune-environment-storage --environment /etc/librechat-code/app.yaml --apply
+```
+
+Pass all relevant definitions with repeated `--environment` flags so their roots
+participate in isolation checks. Preview is the default and the JSON identifies
+`dryRun`, proposed removals, active keys, unknown data and retained logical usage.
+The command is host-operator-only, not an agent workspace action. It does not touch
+source worktrees (including dirty or unpushed branches), `.verification`, build
+outputs, arbitrary installations or mutable npm/uv caches. Source worktree archival
+requires the separate worktree ownership/binding lifecycle, not an mtime heuristic.
 
 Named actions are fixed commands without model-supplied substitution. The bridge
 advertises only their names and the definition fingerprint, never their shell source

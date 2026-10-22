@@ -119,7 +119,7 @@ a separate machine.
 
 Install:
 
--   Node.js 20.11 or newer (Node.js 24 is supported);
+-   Node.js 22.21 or newer (Node.js 24 is supported);
 -   Git;
 -   `bubblewrap`, `socat`, and `ripgrep` on Linux;
 -   Bash 5.2 or newer and `jq` when Bash Programmatic Tool Calling is enabled;
@@ -255,7 +255,10 @@ Important semantics:
     existing ID such as `primary` to preserve agent/conversation bindings.
 -   `repo` and `ref` are labels. They do not clone, fetch, or check out anything.
 -   `root` must already exist. Relative roots resolve from the definition file.
--   Setup runs before registration on every worker start. It must be idempotent.
+-   Setup runs before registration on every worker start by default. It must be
+    idempotent. Optional `setup.reuse` declares fingerprint inputs and a sandboxed
+    readiness check to avoid reinstalling an unchanged, still-ready checkout. See
+    [preparation reuse](../../packages/code/README.md#reusing-a-prepared-checkout).
 -   A setup failure or timeout prevents registration and leaves a durable
     quarantine marker for operator inspection.
 -   Actions are fixed operator commands. The model selects only the action name
@@ -323,13 +326,37 @@ Configure the worker, preferably in a separate service drop-in:
 ```ini
 [Service]
 Environment=LIBRECHAT_CODE_GITHUB_APP_ID=12345
-Environment=LIBRECHAT_CODE_GITHUB_INSTALLATION_ID=67890
 Environment=LIBRECHAT_CODE_GITHUB_PRIVATE_KEY_FILE=/home/librechat-code/.config/librechat-code/github-app.pem
 ```
 
-The trusted worker mints short-lived installation tokens. Sandboxed commands
-receive masked Git/`gh` credentials only for the configured GitHub hosts; the
-token is not written to the repository, remote URL, or Git configuration.
+Install the same App separately on every personal account or organization the
+worker is allowed to use. By default, the worker binds each admitted workspace
+root to its repository at startup, then mints and caches repository-scoped
+tokens. Different admitted roots can use different installations without
+restarting the worker. For a trusted VM with multiple checkouts under one root,
+set `LIBRECHAT_CODE_GITHUB_REPOSITORY_ROUTING=checkout` and use the `trusted-vm`
+command policy. This opt-in resolves the local `origin` URL of each command's
+current checkout, including linked worktrees. It remains inside the admitted
+filesystem root, but anyone able to alter a checkout's remote can select any
+repository where the App is installed; keep the App's installation scope narrow.
+Pass the checkout as the command working directory; changing directories only
+inside the shell cannot change the token chosen before command launch.
+For a trusted VM that needs to switch among repositories in the same installed
+account or organization inside one command, set
+`LIBRECHAT_CODE_GITHUB_TOKEN_SCOPE=installation`. The resolved installation
+token covers only repositories and permissions GitHub granted to that App
+installation. It refreshes after two minutes so newly approved permissions
+become available without a worker restart. The default is `repository`.
+Commands spanning different accounts or organizations must start in a checkout
+from the target account or organization; a shell `cd` cannot switch the
+installation chosen at command launch.
+Set `LIBRECHAT_CODE_GITHUB_INSTALLATION_ID` only as a legacy
+fixed-installation fallback; it cannot be combined with checkout routing.
+
+Sandboxed commands receive masked Git/`gh` credentials only for the configured
+GitHub hosts; the token is not written to the repository, remote URL, or Git
+configuration. Git commits receive the App bot's canonical no-reply identity so
+GitHub renders the bot profile and avatar.
 
 ## 10. Run under systemd
 
@@ -464,11 +491,16 @@ it still advertises named environments.
 
 ### Expired bridge credential
 
-A running worker refreshes its short-lived credential automatically. If a
-machine is offline long enough that refresh can no longer authenticate, issue
-a fresh one-time pairing for the same worker ID and redeem it with a newly
-generated keypair. Reusing the worker ID preserves the LibreChat environment
-record and its agent assignments; creating a new ID creates a new environment.
+A running worker refreshes its short-lived credential automatically. With
+Code API durable enrollment enabled, a worker that still has its enrolled
+private key can request a short-lived challenge and recover a new access
+credential without manual re-pairing. The current CLI does **not** yet invoke
+that endpoint automatically; update it when worker reconnect support ships.
+Until then, or if enrollment is missing or revoked, use the one-time operator
+pairing fallback. A new pairing replaces the Code API worker identity and may
+require LibreChat environment reauthorization; reusing a worker ID alone does
+not guarantee preservation of its LibreChat environment or agent assignments.
+Never clear quarantine or workspace fences as part of credential recovery.
 
 ### Failed environment setup or uncertain mutation
 
@@ -489,6 +521,35 @@ replace the local clear command.
 Never clear quarantine merely to make the worker start. It represents a setup,
 command, cancellation, or settlement whose effects may be incomplete.
 
+### Disk filled by task worktrees
+
+Agents that create one linked worktree per task under `<checkout>/.worktrees/`
+leave each one behind with its own dependencies and build output. A worker with
+`--linked-worktree-lanes` retires stale ones automatically: two minutes after
+startup, every six hours, and before managed setup would be deferred for low
+space. Only verified linked worktrees in writable roots that are idle for seven
+days, clean, unlocked, outside any merge or rebase, unquarantined, and whose
+`HEAD` is on a remote-tracking ref or already in the default branch by content
+(a squash- or rebase-merged branch whose remote branch was deleted) are
+removed, with `git worktree remove` without `--force`. Merged content is judged
+against the checkout's last fetch of the default branch; the worker never
+fetches. Branches are kept; restore one with
+`git worktree add .worktrees/<name> <branch>`. The
+[worker package guide](../../packages/code/README.md#retiring-stale-linked-worktrees)
+lists every condition.
+
+Each pass logs `worktree retirement: retired N, kept M (reason counts)`. To see
+why a particular worktree is kept, restart once with
+`LIBRECHAT_CODE_LOG_LEVEL=debug`. Worktrees kept as `dirty` or `unpushed` hold
+work nobody has published; push or discard it from the checkout before removing
+them by hand, never with `rm -rf`. If the disk is already full and setup keeps
+failing, free space by hand first: retirement runs only after the worker starts,
+or during setup that has a `storage` floor configured.
+
+To keep every worktree, add `--no-worktree-retirement` (or
+`LIBRECHAT_CODE_WORKTREE_RETIREMENT=false`). To keep them longer, set
+`--worktree-idle-days <n>` (or `LIBRECHAT_CODE_WORKTREE_IDLE_DAYS`).
+
 ## 15. Common failures
 
 -   **`--environment cannot be combined...`:** remove old workspace flags and
@@ -501,7 +562,26 @@ command, cancellation, or settlement whose effects may be incomplete.
 -   **Worker online but not ready:** check native sandbox preparation, definition
     validation, setup, quarantine, and readiness logs.
 -   **Setup repeats on restart:** setup is intentionally per-start; make it
-    idempotent or remove it.
+    idempotent, remove it, or opt in to the bounded `setup.reuse` readiness
+    contract in the [worker package guide](../../packages/code/README.md#reusing-a-prepared-checkout).
+-   **Dependency copies fill the disk:** declare shared npm/uv/browser resources
+    instead of per-worktree downloads. On a verified clone-capable filesystem,
+    configure private copy-on-write snapshots and their lifecycle budget. Do not
+    symlink another branch's mutable `node_modules` or hardlink writable installs.
+-   **Managed preparation deferred for low space:** `storage.minFreeBytes` plus
+    `setupReserveBytes` is a soft pre-setup floor, not a hard quota. A worker
+    with linked worktree lanes first retires stale task worktrees and measures
+    again. If space is still short, expand the volume or clean reproducible
+    artifacts; do not clear quarantine as a disk fix.
+-   **Many `.worktrees/*` directories remain:** see
+    [Disk filled by task worktrees](#disk-filled-by-task-worktrees). Count the
+    kept reasons in the retirement summary before removing anything by hand.
+-   **Snapshot maintenance:** preview with `prune-environment-storage
+    --environment <file>` and use `--apply` only after reviewing its JSON. Active,
+    unknown and unmarked data stays intact. Include all environment definitions
+    for root-isolation checks. This does not archive source worktrees or prune
+    mutable tool caches. Keep control state on separate storage when hard
+    protection from arbitrary build writes is required.
 -   **Git works on the host but not in tools:** verify the App installation,
     permissions, private-key mode/owner, and allowed GitHub domains.
 -   **Repository label is present but files are absent:** `repo`/`ref` are
@@ -518,7 +598,8 @@ command, cancellation, or settlement whose effects may be incomplete.
 -   [ ] Pairing is principal-bound and the identity file is private.
 -   [ ] Definitions are outside roots and immutable to sandboxed tools.
 -   [ ] Workspace ancestors are not group/other writable.
--   [ ] GitHub App is optional, least-privilege, and installed only where needed.
+-   [ ] GitHub App is optional, least-privilege, and installed on every account
+        the worker is expected to use.
 -   [ ] Approval policy remains enforced independently of worker capability.
 -   [ ] Service manager uses the intended executable and configuration.
 -   [ ] Worker is online, ready, and advertises the expected workspace.
