@@ -100,12 +100,6 @@ jobs:
   #
   # Built for linux/amd64 (Momentum EKS x86 node groups). If the cluster moves
   # to Graviton/arm64, change CONTROL_PLANE_PLATFORM and the runner to match.
-  #   egress-gateway, tool-call-server (standalone Dockerfiles)
-  #   sandbox-runner (api/Dockerfile target sandbox-runner-baked: KVM mode with
-  #     /pkgs baked in — this is the image that carries our fork's packages)
-  #
-  # Built for linux/amd64 (Momentum EKS x86 node groups). If the cluster moves
-  # to Graviton/arm64, change CONTROL_PLANE_PLATFORM and the runner to match.
   build-control-plane:
     name: Build and Push Control-Plane Images
     runs-on: ubuntu-latest

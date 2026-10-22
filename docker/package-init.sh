@@ -21,7 +21,7 @@ PYTHON_ALIAS="python${PYTHON_SITE_VERSION}"
 PYTHON_PACKAGE_INSTALLER="${PYTHON_PACKAGE_INSTALLER:-uv}"
 UV_VERSION="${UV_VERSION:-0.11.26}"
 NODE_VERSION="${NODE_VERSION:-24.15.0}"
-BUN_VERSION="${BUN_VERSION:-1.3.14}"
+BUN_VERSION="${BUN_VERSION:-1.4.2}"
 BASH_PACKAGE_VERSION="${BASH_PACKAGE_VERSION:-5.2.0}"
 INSTALL_FAILED=false
 JS_PACKAGE_MANIFEST="${JS_PACKAGE_MANIFEST:-${SCRIPT_DIR}/javascript-packages.txt}"
@@ -87,6 +87,7 @@ echo "=============================================="
 echo ""
 
 packages_ready() {
+    [ -f "/pkgs/python/${PYTHON_VERSION}/lib/python${PYTHON_SITE_VERSION}/.sandbox-pipe-runtime-v1" ] &&
     [ -f "/pkgs/python/${PYTHON_VERSION}/.package-installed" ] &&
     [ -d "/pkgs/python/${PYTHON_VERSION}/lib/python${PYTHON_SITE_VERSION}/site-packages/PIL" ] &&
     [ -d "/pkgs/python/${PYTHON_VERSION}/lib/python${PYTHON_SITE_VERSION}/site-packages/markitdown" ] &&
@@ -94,6 +95,7 @@ packages_ready() {
     [ -d "/pkgs/python/${PYTHON_VERSION}/lib/python${PYTHON_SITE_VERSION}/site-packages/statsmodels" ] &&
     [ -d "/pkgs/python/${PYTHON_VERSION}/lib/python${PYTHON_SITE_VERSION}/site-packages/rasterio" ] &&
     [ -d "/pkgs/python/${PYTHON_VERSION}/lib/python${PYTHON_SITE_VERSION}/site-packages/pdfplumber" ] &&
+    [ -d "/pkgs/python/${PYTHON_VERSION}/lib/python${PYTHON_SITE_VERSION}/site-packages/pypdfium2" ] &&
     [ -f "/pkgs/node/${NODE_VERSION}/.package-installed" ] &&
     js_packages_ready "/pkgs/node/${NODE_VERSION}" &&
     [ -f "/pkgs/bun/${BUN_VERSION}/.package-installed" ] &&
@@ -139,6 +141,7 @@ cd "Python-${PYTHON_VERSION}"
 ./configure --prefix="$PKG_DEST" --enable-optimizations 2>/dev/null
 make -j$(nproc)
 make install
+"${PKG_DEST}/bin/python3" "${SCRIPT_DIR}/python-runtime/install.py"
 cd /tmp
 rm -rf /tmp/Python-${PYTHON_VERSION}*
 
@@ -234,6 +237,7 @@ if [ -f "$PIP_PATH" ]; then
         vsdx \
         pypdf \
         pdfplumber \
+        pypdfium2 \
         defusedxml \
         lxml \
         validators \
