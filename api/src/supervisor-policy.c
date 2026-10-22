@@ -3,6 +3,7 @@
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <linux/audit.h>
 #include <linux/filter.h>
 #include <linux/seccomp.h>
@@ -30,8 +31,11 @@ int main(int argc, char **argv) {
         BPF_JUMP(BPF_JMP | BPF_JSET | BPF_K, 0x40000000, 0, 1),
         BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_KILL_PROCESS),
 #endif
-        DENY(socketpair), DENY(sendmsg), DENY(sendmmsg),
+        DENY(sendmsg), DENY(sendmmsg),
         DENY(io_uring_setup), DENY(io_uring_enter), DENY(io_uring_register),
+        /* The last 7 instructions are the Unix-socket denials; the
+         * SANDBOX_ALLOW_UNIX_SOCKETS opt-in below replaces them with ALLOW. */
+        DENY(socketpair),
         BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_socket, 0, 3),
         BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, args[0])),
         BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, AF_UNIX, 0, 1),
@@ -39,6 +43,17 @@ int main(int argc, char **argv) {
         BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
     };
     struct sock_fprog program = { .len = sizeof(instructions) / sizeof(instructions[0]), .filter = instructions };
+    /* Fork opt-in (SANDBOX_ALLOW_UNIX_SOCKETS=true, also read by the job
+     * policy in nsjail.ts): this filter is inherited by NsJail and every job,
+     * so LibreOffice needs AF_UNIX socket() and socketpair() allowed here too.
+     * Rewrite the socketpair DENY into a jump straight to the final ALLOW.
+     * sendmsg/sendmmsg/io_uring stay denied, so SCM_RIGHTS passing
+     * (CVE-2026-80521) remains blocked. */
+    const char *allow_unix = getenv("SANDBOX_ALLOW_UNIX_SOCKETS");
+    if (allow_unix && strcmp(allow_unix, "true") == 0) {
+        const size_t first = program.len - 7; /* DENY(socketpair) jump */
+        instructions[first] = (struct sock_filter)BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW);
+    }
     if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0
         || prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &program) != 0) {
         perror("sandbox supervisor policy"); return 125;

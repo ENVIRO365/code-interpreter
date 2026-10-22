@@ -52,6 +52,10 @@ export const config = {
     ?? '/pkgs',
   disable_networking: (process.env.SANDBOX_DISABLE_NETWORKING ?? 'true') === 'true',
   use_cgroupv2: (process.env.SANDBOX_USE_CGROUPV2 ?? 'true') === 'true',
+  /** Fork opt-in: let jobs create AF_UNIX sockets and socketpairs (needed by
+   * LibreOffice). sendmsg/sendmmsg stay denied, so SCM_RIGHTS descriptor
+   * passing (CVE-2026-80521) remains blocked. Default false = upstream policy. */
+  allow_unix_sockets: process.env.SANDBOX_ALLOW_UNIX_SOCKETS === 'true',
   allowed_local_network_port: Number(process.env.SANDBOX_ALLOWED_LOCAL_NETWORK_PORT ?? 0),
   output_max_size: safeInt(process.env.SANDBOX_OUTPUT_MAX_SIZE, 1024),
   max_process_count: Number(process.env.SANDBOX_MAX_PROCESS_COUNT ?? 64),

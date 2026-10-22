@@ -94,8 +94,9 @@ const archSpecificLowPrioritySyscalls = process.arch === 'arm64'
   ? ''
   : '    ioperm, iopl, modify_ldt, lookup_dcookie,';
 
-const SECCOMP_POLICY = [
+const seccompPolicy = (): string => [
   ...syscallDefines,
+  '#define AF_UNIX 1',
   '#define AF_INET 2',
   '#define AF_INET6 10',
   '#define AF_NETLINK 16',
@@ -185,9 +186,13 @@ const SECCOMP_POLICY = [
   '    pidfd_send_signal,',
   /* Deny every socket() family. VSOCK keeps its stronger KILL action above.
    * Deny socketpairs as well; packaged runtime IPC uses anonymous pipes.
-   * Keep sendmsg/sendmmsg denied for inherited descriptors too. */
-  '    socket(domain) { domain != AF_VSOCK },',
-  '    socketpair',
+   * Keep sendmsg/sendmmsg denied for inherited descriptors too.
+   * Fork opt-in (SANDBOX_ALLOW_UNIX_SOCKETS=true): allow AF_UNIX socket() and
+   * socketpair() for LibreOffice's IPC. The jail has its own network
+   * namespace, and sendmsg/sendmmsg above still block SCM_RIGHTS. */
+  ...(config.allow_unix_sockets
+    ? ['    socket(domain) { domain != AF_VSOCK && domain != AF_UNIX }']
+    : ['    socket(domain) { domain != AF_VSOCK },', '    socketpair']),
   '  }',
   '}',
   'USE sandbox DEFAULT ALLOW',
@@ -688,7 +693,7 @@ export function buildArgs(opts: BuildArgsOptions): string[] {
   const args: string[] = [
     '--config', cfgPath ?? config.nsjail_config,
     '--log', logPath,
-    '--seccomp_string', SECCOMP_POLICY,
+    '--seccomp_string', seccompPolicy(),
     '--user', `${SANDBOX_INSIDE_UID}:${identity.uid}:1`,
     '--group', `${SANDBOX_INSIDE_GID}:${identity.gid}:1`,
     '-s', '/usr/bin:/bin',

@@ -34,10 +34,25 @@ if len(sys.argv) > 1 and sys.argv[1] == '--filtered':
     peer, _ = listener.accept()
     client.sendall(b'tcp'); assert peer.recv(3) == b'tcp'
     print('PASS: supervisor denies Unix sockets, inherited descriptor sends and io_uring; TCP works')
+elif len(sys.argv) > 1 and sys.argv[1] == '--allow-unix':
+    # Fork opt-in: Unix sockets/socketpairs allowed, descriptor sends still denied.
+    socket.socket(socket.AF_UNIX, socket.SOCK_STREAM).close()
+    left, right = socket.socketpair()
+    right.send(b'ok'); assert left.recv(2) == b'ok'
+    try:
+        left.sendmsg([b'x'], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, b'\0' * 4)])
+    except OSError as error:
+        assert error.errno == errno.EPERM, error
+    else:
+        raise AssertionError('sendmsg allowed under SANDBOX_ALLOW_UNIX_SOCKETS')
+    print('PASS: SANDBOX_ALLOW_UNIX_SOCKETS allows Unix sockets and keeps sendmsg denied')
 else:
     left, right = socket.socketpair()
     result = subprocess.run([POLICY, sys.executable, __file__, '--filtered', str(left.fileno())],
                             pass_fds=[left.fileno()], timeout=5)
+    assert result.returncode == 0, result.returncode
+    result = subprocess.run([POLICY, sys.executable, __file__, '--allow-unix'],
+                            env={**os.environ, 'SANDBOX_ALLOW_UNIX_SOCKETS': 'true'}, timeout=5)
     assert result.returncode == 0, result.returncode
     # The pipe-based NsJail handshake must handle child setup/exec failure,
     # as well as the successful normal path tested by the runner canary.

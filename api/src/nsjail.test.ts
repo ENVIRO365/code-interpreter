@@ -416,6 +416,25 @@ describe('NsJail seccomp policy', () => {
     expect(socketRule).toContain('domain != AF_VSOCK');
   });
 
+  test('SANDBOX_ALLOW_UNIX_SOCKETS opt-in permits only AF_UNIX and keeps send denials', () => {
+    const previous = config.allow_unix_sockets;
+    try {
+      config.allow_unix_sockets = true;
+      const policy = seccompPolicy();
+      const errnoBlock = policy.split('ERRNO(1) {')[1]?.split('  }')[0] ?? '';
+      const socketRule = errnoBlock.split('\n').find(line => line.includes('socket(domain)'));
+      expect(socketRule).toContain('domain != AF_VSOCK && domain != AF_UNIX');
+      expect(policy).toContain('#define AF_UNIX 1');
+      expect(errnoBlock).not.toMatch(/\bsocketpair\b/);
+      for (const name of ['sendmsg', 'sendmmsg', 'io_uring_setup']) {
+        expect(errnoBlock).toMatch(new RegExp(`\\b${name}\\b[,\\s]`));
+      }
+    } finally {
+      config.allow_unix_sockets = previous;
+    }
+    expect(seccompPolicy()).toContain('    socketpair');
+  });
+
   test('KILLs the defense-in-depth batch from the audit', () => {
     const policy = seccompPolicy();
     for (const name of ['settimeofday', 'adjtimex', 'clock_adjtime', 'syslog']) {
