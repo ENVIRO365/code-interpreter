@@ -1,31 +1,42 @@
 import assert from 'node:assert/strict';
+import {
+    mkdir,
+    mkdtemp,
+    writeFile,
+    rm,
+    readdir,
+    open,
+    readFile,
+} from 'node:fs/promises';
+import { constants } from 'node:fs';
 import { spawn } from 'node:child_process';
-import { mkdir, mkdtemp, writeFile, rm, readdir } from 'node:fs/promises';
 import { once } from 'node:events';
 import { RestrictedBackend } from '/opt/extraction/dist/backend.js';
 
 await mkdir('/jobs/other');
 await writeFile('/jobs/other/secret', 'cross-job-canary');
-await writeFile('/socket/secret', 'transport-canary');
+
 const job = await mkdtemp('/jobs/job-');
+const status = await open(
+    `${job}/status`,
+    constants.O_RDWR |
+        constants.O_CREAT |
+        constants.O_EXCL |
+        constants.O_NOFOLLOW,
+    0o600
+);
 const child = spawn(
     '/opt/extraction/guard',
     [job, '/usr/local/bin/python3.13', '/tests/isolation.py', 'probe'],
     {
         env: { EXTRACTION_SECRET_CANARY: 'private-canary' },
-        stdio: ['ignore', 'pipe', 'pipe'],
+        stdio: ['ignore', status.fd, 'ignore'],
     }
 );
-let output = '',
-    errors = '';
-child.stdout.on('data', bytes => {
-    output += bytes;
-});
-child.stderr.on('data', bytes => {
-    errors += bytes;
-});
 const [code] = await once(child, 'close');
-assert.equal(code, 0, errors);
+await status.close();
+const output = await readFile(`${job}/status`, 'ascii');
+assert.equal(code, 0, output);
 assert.equal(output.trim(), 'ISOLATED');
 await rm(job, { recursive: true });
 const runtime = {
@@ -45,13 +56,19 @@ for (const abort of ['immediate', 'running']) {
     await assert.rejects(pending);
     await backend.cleanup(job);
 }
+const flood = await backend.create();
+await assert.rejects(
+    backend.run(flood, 'flood', 'a'.repeat(64), AbortSignal.timeout(1000)),
+    /UNAVAILABLE/
+);
+await backend.cleanup(flood);
 const job2 = await backend.create();
 await assert.rejects(
     backend.run(job2, 'hang', 'a'.repeat(64), AbortSignal.timeout(100))
 );
 await backend.cleanup(job2);
 await rm('/jobs/other', { recursive: true });
-await rm('/socket/secret');
+
 assert.deepEqual(await readdir('/jobs'), []);
 const missing = new RestrictedBackend({ ...runtime, guard: '/nonexistent' });
 const job3 = await missing.create();

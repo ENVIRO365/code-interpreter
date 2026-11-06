@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, timingSafeEqual } from 'node:crypto';
 import { createServer } from 'node:http';
 import { open } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -95,8 +95,31 @@ function requestFormat(req: IncomingMessage): Format {
 }
 export function extractionServer(
     backend: Backend,
+    token: string,
     deadlineMs: number = policy.deadlineMs
 ) {
+    if (!/^[a-f0-9]{64}$/.test(token)) throw new Error('INVALID_TOKEN');
+    const expected = Buffer.from(`Bearer ${token}`, 'ascii');
+    function authorized(req: IncomingMessage): boolean {
+        let count = 0;
+        for (let i = 0; i < req.rawHeaders.length; i += 2)
+            if (req.rawHeaders[i]!.toLowerCase() === 'authorization') count++;
+        const value = req.headers.authorization;
+        if (
+            count !== 1 ||
+            typeof value !== 'string' ||
+            value.length !== expected.length
+        )
+            return false;
+        const actual = Buffer.from(value, 'utf8');
+        return (
+            actual.length === expected.length &&
+            timingSafeEqual(actual, expected)
+        );
+    }
+    function unauthorized(res: ServerResponse): void {
+        reply(res, 401, Buffer.from('{"error":{"code":"UNAUTHORIZED"}}'));
+    }
     if (
         !Number.isInteger(deadlineMs) ||
         deadlineMs <= 0 ||
@@ -120,12 +143,18 @@ export function extractionServer(
     server.requestTimeout = policy.deadlineMs;
     server.setTimeout(policy.deadlineMs, socket => socket.destroy());
     server.on('checkContinue', (req, res) => {
+        if (!authorized(req)) return unauthorized(res);
+        reply(res, 400, Buffer.from('{"error":{"code":"INVALID_REQUEST"}}'));
+    });
+    server.on('checkExpectation', (req, res) => {
+        if (!authorized(req)) return unauthorized(res);
         reply(res, 400, Buffer.from('{"error":{"code":"INVALID_REQUEST"}}'));
     });
     async function handle(
         req: IncomingMessage,
         res: ServerResponse
     ): Promise<void> {
+        if (!authorized(req)) return unauthorized(res);
         if (req.method === 'GET' && req.url === '/v1/capabilities') {
             reply(
                 res,

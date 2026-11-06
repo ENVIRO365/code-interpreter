@@ -1,5 +1,5 @@
 # Egress Gateway Dockerfile
-FROM oven/bun:1.4.2 AS base
+FROM oven/bun:1.4.4 AS base
 WORKDIR /app
 
 FROM base AS install
@@ -11,7 +11,7 @@ RUN mkdir -p /temp/prod
 COPY service/package.json service/bun.lock /temp/prod/
 RUN cd /temp/prod && bun install --frozen-lockfile --production
 
-FROM oven/bun:1.4.2 AS production
+FROM oven/bun:1.4.4 AS production
 ENV NODE_ENV=production
 WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
@@ -22,7 +22,7 @@ COPY packages/code/src /packages/code/src
 EXPOSE 3190
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
   CMD curl -f http://localhost:3190/health || exit 1
-CMD ["bun", "run", "src/egress-gateway.ts"]
+CMD ["bun", "run", "--max-http-header-size=262144", "src/egress-gateway.ts"]
 
 FROM base AS development
 ENV NODE_ENV=development
@@ -31,4 +31,4 @@ COPY service/src ./src
 COPY shared /shared
 COPY packages/code/src /packages/code/src
 EXPOSE 3190 9230
-CMD ["bun", "run", "--watch", "src/egress-gateway.ts"]
+CMD ["bun", "run", "--watch", "--max-http-header-size=262144", "src/egress-gateway.ts"]

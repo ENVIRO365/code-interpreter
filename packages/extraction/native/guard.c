@@ -59,6 +59,9 @@ static void restrict_syscalls(void) {
         BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_KILL_PROCESS),
 #endif
         DENY(__NR_socket), DENY(__NR_socketpair), DENY(__NR_connect),
+        DENY(__NR_sendmsg), DENY(__NR_recvmsg), DENY(__NR_sendmmsg), DENY(__NR_recvmmsg),
+        DENY(__NR_sendto), DENY(__NR_recvfrom), DENY(__NR_setsockopt), DENY(__NR_getsockopt),
+        DENY(__NR_shutdown), DENY(__NR_getsockname), DENY(__NR_getpeername),
         DENY(__NR_bind), DENY(__NR_listen), DENY(__NR_accept), DENY(__NR_accept4),
         DENY(__NR_clone), DENY(__NR_clone3),
 #ifdef __NR_fork
@@ -119,6 +122,11 @@ static void restrict_syscalls(void) {
 int main(int argc, char **argv) {
     if (argc != 5 || geteuid() == 0) fail();
     /* Paths are supervisor-owned, never supplied in the HTTP protocol. */
+    struct stat input, output, errors, null;
+    if (fstat(0, &input) || fstat(1, &output) || fstat(2, &errors) || stat("/dev/null", &null)) fail();
+    if (!S_ISCHR(input.st_mode) || input.st_rdev != null.st_rdev ||
+        !S_ISCHR(errors.st_mode) || errors.st_rdev != null.st_rdev ||
+        !S_ISREG(output.st_mode) || output.st_nlink != 1 || output.st_size != 0) fail();
     if (chdir(argv[1])) fail();
     pid_t parent = getppid();
     if (parent == 1 || prctl(PR_SET_PDEATHSIG, SIGKILL) || getppid() != parent) fail();

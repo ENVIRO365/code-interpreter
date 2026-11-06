@@ -1739,7 +1739,9 @@ test('cleans allocated command state exactly once on every execution exit', asyn
                                     (outcome === 'abort-after-spawn') &&
             error.requiresQuarantine ===
                                     (outcome === 'abort-after-spawn' &&
-                                        process.platform === 'win32'),
+                                        process.platform === 'win32') &&
+            (outcome.startsWith('abort') || (error.commandDiagnostic?.stage ===
+              (outcome === 'wrap-throw' ? 'command_wrapping' : 'dispatch'))),
           );
         }
         assert.equal(
