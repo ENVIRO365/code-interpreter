@@ -74,6 +74,9 @@ for (const oldRuntimeExists of [false, true]) {
                 'chdb',
                 'statsmodels',
                 'rasterio',
+                // Fork additions required by packages_ready() in docker/package-init.sh
+                'pdfplumber',
+                'pypdfium2',
             ]) {
                 fs.mkdirSync(
                     path.join(python, 'lib/python3.14/site-packages', name),
