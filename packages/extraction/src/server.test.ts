@@ -27,15 +27,15 @@ async function fixture(deadline = 500) {
             await rm(job, { recursive: true });
         },
     };
-    const server = extractionServer(backend, deadline);
-    const socketPath = join(root, 'service.sock');
-    server.listen(socketPath);
+    const server = extractionServer(backend, 'a'.repeat(64), deadline);
+    server.listen(0, '127.0.0.1');
     await once(server, 'listening');
+    const port = (server.address() as import('node:net').AddressInfo).port;
     return {
         backend,
         events,
         root,
-        socketPath,
+        port,
         server,
         close: async () => {
             server.closeAllConnections();
@@ -45,23 +45,25 @@ async function fixture(deadline = 500) {
     };
 }
 const headers = {
+    Authorization: `Bearer ${'a'.repeat(64)}`,
     'Content-Type': 'application/octet-stream',
     'Content-Length': '4',
     'X-Extraction-Version': '1',
     'X-Extraction-Format': 'pdf',
 };
-async function send(
-    socketPath: string,
-    overrides = {},
-    path = '/v1/extract-text'
-) {
+async function send(port: number, overrides = {}, path = '/v1/extract-text') {
     return new Promise<{ status: number; body: string }>((resolve, reject) => {
         const req = request(
             {
-                socketPath,
+                host: '127.0.0.1',
+                port,
                 path,
-                method: 'POST',
-                headers: { ...headers, ...overrides },
+                method: path === '/v1/capabilities' ? 'GET' : 'POST',
+                headers: Object.fromEntries(
+                    Object.entries({ ...headers, ...overrides }).filter(
+                        ([, value]) => value !== undefined
+                    )
+                ),
             },
             res => {
                 let body = '';
@@ -78,9 +80,9 @@ async function send(
 test('binary upload executes once and cleanup completes before success', async () => {
     const f = await fixture();
     try {
-        assert.equal((await send(f.socketPath)).status, 200);
+        assert.equal((await send(f.port)).status, 200);
         assert.deepEqual(f.events, ['create', 'run', 'cleanup']);
-        assert.deepEqual(await readdir(f.root), ['service.sock']);
+        assert.deepEqual(await readdir(f.root), []);
     } finally {
         await f.close();
     }
@@ -94,15 +96,15 @@ test('closed parameters and declared input limit are rejected before admission',
             { 'X-Extraction-Url': 'https://example.com' },
             { 'Content-Type': 'text/plain' },
         ]) {
-            assert.equal((await send(f.socketPath, changes)).status, 400);
+            assert.equal((await send(f.port, changes)).status, 400);
         }
         assert.equal(
-            (await send(f.socketPath, {}, '/v1/extract-text?path=x')).status,
+            (await send(f.port, {}, '/v1/extract-text?path=x')).status,
             404
         );
         assert.equal(
             (
-                await send(f.socketPath, {
+                await send(f.port, {
                     'Content-Length': String(policy.inputBytes + 1),
                 })
             ).status,
@@ -120,8 +122,8 @@ test('cleanup failure suppresses success and quarantines backend', async () => {
         throw new ExtractionError('UNAVAILABLE');
     };
     try {
-        assert.equal((await send(f.socketPath)).status, 503);
-        assert.equal((await send(f.socketPath)).status, 503);
+        assert.equal((await send(f.port)).status, 503);
+        assert.equal((await send(f.port)).status, 503);
         assert.equal(f.events.filter(e => e === 'run').length, 1);
     } finally {
         await f.close();
@@ -146,7 +148,7 @@ test('deadline aborts execution and waits for its close before cleanup', async (
         return Buffer.alloc(0);
     };
     try {
-        assert.equal((await send(f.socketPath)).status, 504);
+        assert.equal((await send(f.port)).status, 504);
         assert.deepEqual(f.events, ['create', 'closed', 'cleanup']);
     } finally {
         await f.close();
@@ -157,7 +159,8 @@ test('upload disconnect and stalled upload both release scratch and admission', 
     try {
         for (const disconnect of [true, false]) {
             const req = request({
-                socketPath: f.socketPath,
+                host: '127.0.0.1',
+                port: f.port,
                 path: '/v1/extract-text',
                 method: 'POST',
                 headers,
@@ -168,10 +171,10 @@ test('upload disconnect and stalled upload both release scratch and admission', 
             await new Promise(resolve => setTimeout(resolve, 20));
             if (disconnect) req.destroy();
             await new Promise(resolve => setTimeout(resolve, 80));
-            assert.deepEqual(await readdir(f.root), ['service.sock']);
+            assert.deepEqual(await readdir(f.root), []);
         }
         assert.equal(f.events.includes('run'), false);
-        assert.equal((await send(f.socketPath)).status, 200);
+        assert.equal((await send(f.port)).status, 200);
     } finally {
         await f.close();
     }
@@ -188,11 +191,11 @@ test('two active jobs bound concurrency without a queue', async () => {
         return Buffer.alloc(0);
     };
     try {
-        const a = send(f.socketPath),
-            b = send(f.socketPath);
+        const a = send(f.port),
+            b = send(f.port);
         while (active !== 2)
             await new Promise(resolve => setTimeout(resolve, 5));
-        assert.equal((await send(f.socketPath)).status, 429);
+        assert.equal((await send(f.port)).status, 429);
         assert.equal((await a).status, 504);
         assert.equal((await b).status, 504);
     } finally {
@@ -205,7 +208,8 @@ test('deadline closes stalled output readers while keeping their slots admitted'
     const clients = [0, 1].map(() => {
         const req = request(
             {
-                socketPath: f.socketPath,
+                host: '127.0.0.1',
+                port: f.port,
                 path: '/v1/extract-text',
                 method: 'POST',
                 headers,
@@ -222,10 +226,10 @@ test('deadline closes stalled output readers while keeping their slots admitted'
     try {
         while (f.events.filter(e => e === 'cleanup').length !== 2)
             await new Promise(resolve => setTimeout(resolve, 5));
-        assert.equal((await send(f.socketPath)).status, 429);
+        assert.equal((await send(f.port)).status, 429);
         await new Promise(resolve => setTimeout(resolve, 300));
         f.backend.run = async () => Buffer.from('{}');
-        assert.equal((await send(f.socketPath)).status, 200);
+        assert.equal((await send(f.port)).status, 200);
     } finally {
         clients.forEach(client => client.destroy());
         await f.close();
@@ -236,7 +240,7 @@ test('duplicate extraction control headers are rejected before worker creation',
     try {
         assert.equal(
             (
-                await send(f.socketPath, {
+                await send(f.port, {
                     'X-Extraction-Format': ['pdf', 'pdf'],
                 })
             ).status,
@@ -254,13 +258,95 @@ test('unsupported document content returns a safe failure after cleanup', async 
         throw new ExtractionError('UNSUPPORTED_CONTENT');
     };
     try {
-        const response = await send(f.socketPath);
+        const response = await send(f.port);
         assert.equal(response.status, 422);
         assert.deepEqual(JSON.parse(response.body), {
             error: { code: 'UNSUPPORTED_CONTENT' },
         });
         assert.deepEqual(f.events, ['create', 'cleanup']);
-        assert.deepEqual(await readdir(f.root), ['service.sock']);
+        assert.deepEqual(await readdir(f.root), []);
+    } finally {
+        await f.close();
+    }
+});
+
+test('authentication fails before validation, health checks or admission', async () => {
+    const f = await fixture();
+    f.backend.healthy = false;
+    try {
+        for (const authorization of [
+            undefined,
+            '',
+            `Bearer ${'b'.repeat(64)}`,
+            `Bearer ${'A'.repeat(64)}`,
+            [`Bearer ${'a'.repeat(64)}`, `Bearer ${'a'.repeat(64)}`],
+        ]) {
+            for (const path of ['/v1/capabilities', '/v1/extract-text']) {
+                const response = await send(
+                    f.port,
+                    {
+                        Authorization: authorization,
+                        'X-Extraction-Format': 'invalid',
+                    },
+                    path
+                );
+                assert.equal(response.status, 401);
+                assert.deepEqual(JSON.parse(response.body), {
+                    error: { code: 'UNAUTHORIZED' },
+                });
+            }
+        }
+        assert.deepEqual(f.events, []);
+        const response = await new Promise<number>((resolve, reject) => {
+            const req = request(
+                {
+                    host: '127.0.0.1',
+                    port: f.port,
+                    path: '/v1/capabilities',
+                    headers: { Authorization: headers.Authorization },
+                },
+                res => {
+                    res.resume();
+                    res.on('end', () => resolve(res.statusCode!));
+                }
+            );
+            req.on('error', reject);
+            req.end();
+        });
+        assert.equal(response, 503);
+    } finally {
+        await f.close();
+    }
+});
+
+test('unauthenticated expectations and stalled bodies close without admission', async () => {
+    const f = await fixture();
+    try {
+        for (const expectation of [undefined, '100-continue', 'unsupported']) {
+            await new Promise<void>((resolve, reject) => {
+                const req = request(
+                    {
+                        host: '127.0.0.1',
+                        port: f.port,
+                        method: 'POST',
+                        path: '/v1/extract-text',
+                        headers: {
+                            'Content-Length': '1000',
+                            ...(expectation ? { Expect: expectation } : {}),
+                        },
+                    },
+                    res => {
+                        assert.equal(res.statusCode, 401);
+                        assert.equal(res.headers.connection, 'close');
+                        res.resume();
+                        res.once('end', resolve);
+                    }
+                );
+                req.on('error', reject);
+                req.flushHeaders();
+            });
+        }
+        assert.deepEqual(f.events, []);
     } finally {
         await f.close();
     }

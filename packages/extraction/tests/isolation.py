@@ -6,15 +6,44 @@ import resource
 import signal
 import socket
 import struct
+import stat
 import sys
 
+for fd in (0, 2):
+    assert stat.S_ISCHR(os.fstat(fd).st_mode)
+    assert os.fstat(fd).st_rdev == os.stat('/dev/null').st_rdev
+assert stat.S_ISREG(os.fstat(1).st_mode)
+for fd in range(3, 64):
+    try:
+        os.fstat(fd)
+    except OSError as error:
+        assert error.errno == errno.EBADF
+    else:
+        raise RuntimeError('Inherited descriptor')
+
+libc = ctypes.CDLL(None, use_errno=True)
+# Invalid descriptors would return EBADF without filtering. No messages are sent.
+for name, args in [
+    ('socketpair', (socket.AF_UNIX, socket.SOCK_STREAM, 0, 0)),
+    ('sendmsg', (-1, 0, 0)), ('recvmsg', (-1, 0, 0)),
+    ('sendmmsg', (-1, 0, 0, 0)), ('recvmmsg', (-1, 0, 0, 0, 0)),
+    ('sendto', (-1, 0, 0, 0, 0, 0)), ('recvfrom', (-1, 0, 0, 0, 0, 0)),
+    ('setsockopt', (-1, 0, 0, 0, 0)), ('getsockopt', (-1, 0, 0, 0, 0)),
+    ('sendmsg', (1, 0, 0)), ('recvmsg', (1, 0, 0)),
+]:
+    assert getattr(libc, name)(*args) == -1, name
+    assert ctypes.get_errno() == errno.EPERM, (name, ctypes.get_errno())
+
+if sys.argv[1] == 'flood':
+    os.write(1, b'x' * 2048)
+    sys.exit(0)
 if sys.argv[1] == 'hang':
     # Exercise supervisor cancellation/deadline termination, not a cooperative parser.
     while True:
         pass
 
 for path, mode in [('/jobs/other/secret', 'rb'), ('/jobs/other/secret', 'wb'),
-                   ('/socket/secret', 'rb'), ('/proc/self/environ', 'rb'), ('/etc/passwd', 'rb')]:
+                   ('/run/extraction/token', 'rb'), ('/proc/self/environ', 'rb'), ('/etc/passwd', 'rb')]:
     try:
         with open(path, mode) as file:
             if mode == 'rb':

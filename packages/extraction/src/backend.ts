@@ -46,67 +46,79 @@ export class RestrictedBackend implements Backend {
         signal: AbortSignal
     ): Promise<string> {
         signal.throwIfAborted();
-        const child = spawn(
-            this.runtime.guard,
-            [job, this.runtime.python, this.runtime.worker, mode],
-            {
-                detached: true,
-                stdio: ['ignore', 'pipe', 'pipe'],
-                env: {},
-            }
+        const status = await open(
+            join(job, 'status'),
+            constants.O_CREAT |
+                constants.O_EXCL |
+                constants.O_NOFOLLOW |
+                constants.O_RDWR,
+            0o600
         );
-        let output = '';
-        let count = 0;
-        let overflow = false;
-        const kill = () => {
-            if (
-                child.pid &&
-                child.exitCode === null &&
-                child.signalCode === null
-            ) {
-                try {
-                    process.kill(-child.pid, 'SIGKILL');
-                } catch (error) {
-                    if ((error as NodeJS.ErrnoException).code !== 'ESRCH')
-                        this.healthy = false;
+        try {
+            signal.throwIfAborted();
+            const child = spawn(
+                this.runtime.guard,
+                [job, this.runtime.python, this.runtime.worker, mode],
+                {
+                    detached: true,
+                    stdio: ['ignore', status.fd, 'ignore'],
+                    env: {},
                 }
-            }
-        };
-        signal.addEventListener('abort', kill, { once: true });
-        if (signal.aborted) kill();
-        let spawnError = false;
-        child.on('error', () => {
-            spawnError = true;
-        });
-        child.stdout.on('data', (chunk: Buffer) => {
-            count += chunk.length;
-            if (count > 1024) {
-                overflow = true;
-                kill();
-            } else output += chunk.toString('ascii');
-        });
-        child.stderr.on('data', (chunk: Buffer) => {
-            count += chunk.length;
-            if (count > 2048) {
-                overflow = true;
-                kill();
-            }
-        });
-        const code = await new Promise<number | null>(resolve =>
-            child.once('close', resolve)
-        );
-        signal.removeEventListener('abort', kill);
-        signal.throwIfAborted();
-        if (spawnError || overflow) throw new ExtractionError('UNAVAILABLE');
-        if (code !== 0) {
-            const value = output.trim();
-            if (parserErrors.has(value))
-                throw new ExtractionError(value as 'INVALID_DOCUMENT');
-            throw new ExtractionError(
-                code === null ? 'RESOURCE_LIMIT' : 'UNAVAILABLE'
             );
+            const kill = () => {
+                if (
+                    child.pid &&
+                    child.exitCode === null &&
+                    child.signalCode === null
+                ) {
+                    try {
+                        process.kill(-child.pid, 'SIGKILL');
+                    } catch (error) {
+                        if ((error as NodeJS.ErrnoException).code !== 'ESRCH')
+                            this.healthy = false;
+                    }
+                }
+            };
+            signal.addEventListener('abort', kill, { once: true });
+            if (signal.aborted) kill();
+            let spawnError = false;
+            child.on('error', () => {
+                spawnError = true;
+            });
+            const code = await new Promise<number | null>(resolve =>
+                child.once('close', resolve)
+            );
+            signal.removeEventListener('abort', kill);
+            signal.throwIfAborted();
+            const stat = await status.stat();
+            if (
+                spawnError ||
+                !stat.isFile() ||
+                stat.nlink !== 1 ||
+                stat.size > 1024
+            )
+                throw new ExtractionError('UNAVAILABLE');
+            const buffer = Buffer.alloc(1025);
+            const { bytesRead } = await status.read(
+                buffer,
+                0,
+                buffer.length,
+                0
+            );
+            if (bytesRead > 1024) throw new ExtractionError('UNAVAILABLE');
+            const output = buffer.toString('ascii', 0, bytesRead);
+            if (code !== 0) {
+                const value = output.trim();
+                if (parserErrors.has(value))
+                    throw new ExtractionError(value as 'INVALID_DOCUMENT');
+                throw new ExtractionError(
+                    code === null ? 'RESOURCE_LIMIT' : 'UNAVAILABLE'
+                );
+            }
+            return output;
+        } finally {
+            await status.close();
         }
-        return output;
     }
     async probe(): Promise<void> {
         const job = await this.create();
@@ -131,7 +143,7 @@ export class RestrictedBackend implements Backend {
         await this.execute(job, format, signal);
         const file = await open(
             join(job, 'result'),
-            constants.O_RDONLY | constants.O_NOFOLLOW
+            constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK
         );
         try {
             const stat = await file.stat();
@@ -142,7 +154,11 @@ export class RestrictedBackend implements Backend {
             ) {
                 throw new ExtractionError('OUTPUT_LIMIT');
             }
-            const bytes = await file.readFile();
+            const buffer = Buffer.alloc(stat.size + 1);
+            const { bytesRead } = await file.read(buffer, 0, buffer.length, 0);
+            if (bytesRead > policy.resultBytes)
+                throw new ExtractionError('OUTPUT_LIMIT');
+            const bytes = buffer.subarray(0, bytesRead);
             signal.throwIfAborted();
             validateResult(bytes, format, digest);
             return bytes;

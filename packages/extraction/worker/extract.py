@@ -434,9 +434,9 @@ def probe():
     import docx
     import lxml.etree
 
-    for path in ("/socket", "/jobs", "/proc/self/environ", "/etc/passwd"):
+    for path in ("/run/extraction", "/jobs", "/proc/self/environ", "/etc/passwd"):
         try:
-            if path in ("/socket", "/jobs"):
+            if path in ("/run/extraction", "/jobs"):
                 os.listdir(path)
             else:
                 open(path, "rb").read(1)

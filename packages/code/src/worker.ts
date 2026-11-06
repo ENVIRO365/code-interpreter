@@ -7,6 +7,7 @@ import {
   bridgeWorkerPath,
   isBridgeWorkspaceProgrammaticRequest,
   isValidLinkedWorktreeName,
+  isWorkspaceMutationOperation,
   isWorkspaceToolResult,
   workspaceIsolationKey,
   workspaceIsolationKeysConflict,
@@ -17,6 +18,8 @@ import { EndpointRuntimeSupervisor } from './runtime.js';
 import { signBridgeRequest } from './identity.js';
 import { recoverWorkerCredential } from './credential-recovery.js';
 import { isWorkspaceToolRequest, WorkspaceToolError } from './workspace.js';
+import { commandFailureEvent } from './command-diagnostics.js';
+import type { CommandFailureEvent } from './command-diagnostics.js';
 
 import type {
   WorkspaceCommandResultFeature,
@@ -94,6 +97,8 @@ export interface BridgeWorkerOptions {
   credentialRefreshTransportTimeoutMs?: number;
   fetchImpl?: typeof fetch;
   onError?: (error: unknown) => void;
+  /** Local-only, allowlisted command failure metadata; never contains request data. */
+  onCommandFailure?: (event: CommandFailureEvent) => void | Promise<void>;
   onIdentityChange?: (identity: BridgeWorkerIdentity) => void | Promise<void>;
   onRegistered?: (
     registration: BridgeWorkerRegistrationResponse,
@@ -564,10 +569,7 @@ export class BridgeWorker {
     }
     if (
       options.capabilities.workspaceTools?.operations.some(
-        (operation) =>
-          operation === 'write_file' ||
-          operation === 'edit_file' ||
-          operation === 'execute_command',
+        isWorkspaceMutationOperation,
       ) === true &&
       options.workspaceMutationQuarantine == null &&
       options.workspaceQuarantines == null &&
@@ -1885,10 +1887,9 @@ export class BridgeWorker {
             'Workspace listing feature is not advertised',
           );
         }
-        const isMutation =
-          workspaceRequest.operation === 'write_file' ||
-          workspaceRequest.operation === 'edit_file' ||
-          workspaceRequest.operation === 'execute_command';
+        const isMutation = isWorkspaceMutationOperation(
+          workspaceRequest.operation,
+        );
         if (isMutation) {
           this.mutationGuardArmed = true;
           try {
@@ -2117,6 +2118,35 @@ export class BridgeWorker {
         result: payload,
       };
     } catch (error) {
+      if (
+        error instanceof WorkspaceToolError &&
+        error.code === 'COMMAND_UNAVAILABLE' &&
+        (assignment.executionKind === 'workspace_programmatic' ||
+          (assignment.executionKind === 'workspace_tool' &&
+            isWorkspaceToolRequest(assignment.request) &&
+            assignment.request.operation === 'execute_command'))
+      ) {
+        try {
+          const event = commandFailureEvent(error.commandDiagnostic, {
+            assignmentId: assignment.assignmentId,
+            workerId: this.options.workerId,
+            incarnationId: this.incarnationId,
+            workspaceId: assignment.executionKind === 'workspace_programmatic'
+              ? assignment.workspaceId
+              : (isWorkspaceToolRequest(assignment.request) ? assignment.request.workspaceId : undefined),
+            operation: assignment.executionKind === 'workspace_programmatic'
+              ? 'workspace_programmatic'
+              : 'execute_command',
+            mutationMayHaveCommitted: error.mutationMayHaveCommitted,
+            requiresQuarantine: error.requiresQuarantine,
+          });
+          void Promise.resolve(this.options.onCommandFailure?.(event)).catch(() => {
+            // A rejected asynchronous log sink must not interrupt settlement.
+          });
+        } catch {
+          // Observability must never change settlement or quarantine decisions.
+        }
+      }
       if (
         error instanceof BridgeWorkspaceQuarantinedError &&
         !workspaceMutationArmed
@@ -2566,9 +2596,7 @@ export class BridgeWorker {
       (assignment.executionKind === 'workspace_programmatic' ||
         (assignment.executionKind === 'workspace_tool' &&
           isWorkspaceToolRequest(assignment.request) &&
-          (assignment.request.operation === 'write_file' ||
-            assignment.request.operation === 'edit_file' ||
-            assignment.request.operation === 'execute_command')));
+          isWorkspaceMutationOperation(assignment.request.operation)));
     if (signal?.aborted === true) {
       if (assignment.runtimeSessionId != null || fulfilledWorkspaceMutation) {
         throw await this.quarantineWorkspace(

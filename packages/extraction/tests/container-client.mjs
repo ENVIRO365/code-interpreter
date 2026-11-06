@@ -3,21 +3,27 @@ import { readFileSync } from 'node:fs';
 import { request } from 'node:http';
 import { createHash } from 'node:crypto';
 
-const socketPath = '/socket/extraction.sock';
+const host = process.env.EXTRACTION_HOST ?? 'extraction';
+const token = readFileSync('/run/extraction/token', 'ascii');
 function send(format, bytes, path = '/v1/extract-text', extra = {}) {
     return new Promise((resolve, reject) => {
         const req = request(
             {
-                socketPath,
+                host,
+                port: 8000,
                 path,
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/octet-stream',
-                    'Content-Length': bytes.length,
-                    'X-Extraction-Version': '1',
-                    'X-Extraction-Format': format,
-                    ...extra,
-                },
+                method: path === '/v1/capabilities' ? 'GET' : 'POST',
+                family: 4,
+                headers: Object.fromEntries(
+                    Object.entries({
+                        Authorization: `Bearer ${token}`,
+                        'Content-Type': 'application/octet-stream',
+                        'Content-Length': bytes.length,
+                        'X-Extraction-Version': '1',
+                        'X-Extraction-Format': format,
+                        ...extra,
+                    }).filter(([, value]) => value !== undefined)
+                ),
             },
             res => {
                 const chunks = [];
@@ -36,6 +42,15 @@ function send(format, bytes, path = '/v1/extract-text', extra = {}) {
         req.on('error', reject);
         req.end(bytes);
     });
+}
+for (const Authorization of [undefined, `Bearer ${'0'.repeat(64)}`]) {
+    for (const path of ['/v1/capabilities', '/v1/extract-text']) {
+        const response = await send('pdf', Buffer.from('test'), path, {
+            Authorization,
+        });
+        assert.equal(response.status, 401);
+        assert.deepEqual(response.value, { error: { code: 'UNAUTHORIZED' } });
+    }
 }
 const fixtures = '/tests/fixtures';
 const pages = readFileSync(`${fixtures}/pages.pdf`);

@@ -45,6 +45,8 @@ export interface BridgeRouterOptions {
   configuredWorkerId?: string;
   allowDynamicWorkers?: boolean;
   maxCommandTimeoutMs?: number;
+  /** Offer `import_file`; true only when this Code API can mint its egress grant. */
+  workspaceImportFile?: boolean;
 }
 
 function sameToken(left: string, right: string): boolean {
@@ -606,6 +608,7 @@ router.post(
           'preview_edit',
           'edit_file',
           'execute_command',
+          ...(options.workspaceImportFile === true ? ['import_file' as const] : []),
         ],
         supportedWorkspaceWriteFileModes: ['replace', 'create'],
         supportedWorkspaceEditFileModes: ['single', 'batch'],
